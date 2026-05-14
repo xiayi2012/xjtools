@@ -1,0 +1,22 @@
+# Linux SSH 巡检工具 - 依赖文件
+# 核心依赖
+PyQt6>=6.6.0
+paramiko>=3.4.0
+cryptography>=42.0.0
+requests>=2.31.0
+
+# 报告生成
+reportlab>=4.1.0
+Jinja2>=3.1.0
+
+# UI 美化 - 从本地 PyQt-Fluent-Widgets 安装
+# pip install PyQt-Fluent-Widgets -i https://pypi.org/simple/
+# 或使用本地源码: pip install C:/Users/AH/PyQt-Fluent-Widgets-master
+
+# 测试
+pytest>=8.0.0
+pytest-qt>=4.3.0
+
+# 开发工具
+flake8>=7.0.0
+black>=24.0.0
