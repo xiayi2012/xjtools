@@ -1394,6 +1394,52 @@ class ServerGridItem(DeviceActionsMixin, QFrame):
     
 
 
+class ServerDetailItem(ServerGridItem):
+    """Compact inspector card, sharing the existing device actions and root state."""
+
+    def init_ui(self):
+        self.setObjectName('serverDetailItem')
+        self.setMinimumHeight(112)
+        self.setMaximumHeight(124)
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(12, 10, 12, 10)
+        layout.setSpacing(5)
+        header = QHBoxLayout()
+        name = QLabel(self.server.get('name') or self.server.get('host', '设备'))
+        name.setTextFormat(Qt.TextFormat.PlainText)
+        name.setWordWrap(True)
+        name.setStyleSheet('font-size:14px; font-weight:600; color:#223b47;')
+        header.addWidget(name, 1)
+        header.addWidget(self._create_actions_button())
+        layout.addLayout(header)
+        address = QLabel(f'{self.server.get("host", "")}:{self.server.get("port", 22)}')
+        address.setTextFormat(Qt.TextFormat.PlainText)
+        address.setStyleSheet('font:11px "Consolas"; color:#6b7f8b;')
+        layout.addWidget(address)
+        bottom = QHBoxLayout()
+        product = QLabel(f'{self.server.get("product") or "通用"} · {self.server.get("username", "")}')
+        product.setTextFormat(Qt.TextFormat.PlainText)
+        product.setStyleSheet('font-size:11px; color:#6b7f8b;')
+        bottom.addWidget(product, 1)
+        self.connect_btn = QPushButton('连接')
+        self.connect_btn.setObjectName('detailConnectBtn')
+        self.connect_btn.setFixedSize(64, 27)
+        self.connect_btn.clicked.connect(lambda: self.connect_clicked.emit(self.server))
+        bottom.addWidget(self.connect_btn)
+        layout.addLayout(bottom)
+
+    def set_connected(self, connected, is_root=False):
+        self.is_connected = bool(connected)
+        self.is_root = bool(connected and (is_root or self.server.get('username', '').strip().lower() == 'root'))
+        self._update_root_action()
+        self.connect_btn.setText('断开' if connected else '连接')
+        self.setStyleSheet('''
+            QFrame#serverDetailItem {background:#f7fafb; border:1px solid #e1e9ed; border-radius:8px;}
+            QPushButton#detailConnectBtn {border:1px solid #b9dcd5; border-radius:5px; background:#e6f5f1; color:#137c70; font-size:11px;}
+            QPushButton#detailConnectBtn:hover {background:#d2eee7; border-color:#55b5a7;}
+        ''')
+
+
 class ProductSection(QWidget):
     """产品分组组件"""
     
@@ -1585,11 +1631,11 @@ class ProductPage(QWidget):
 
         # 标题区域
         title_layout = QHBoxLayout()
-        title_layout.setSpacing(20)
+        title_layout.setSpacing(10)
 
         self.title_label = QLabel("设备管理")
         self.title_label.setObjectName("pageTitle")
-        self.title_label.setStyleSheet("font-size: 18px; font-weight: bold; color: #50C9C3; padding: 5px;")
+        self.title_label.setStyleSheet('font-size:23px; font-weight:600; color:#203b49; padding:0;')
         title_layout.addWidget(self.title_label)
 
         title_layout.addStretch()
@@ -1621,7 +1667,6 @@ class ProductPage(QWidget):
             button.clicked.connect(lambda checked, grid=is_grid: self.set_view_mode(grid))
             self.view_button_group.addButton(button, int(is_grid))
             switcher_layout.addWidget(button)
-        title_layout.addWidget(self.view_switcher)
         rack_button = QToolButton()
         rack_button.setObjectName('rackViewButton')
         rack_button.setProperty('viewChoice', True)
@@ -1634,6 +1679,8 @@ class ProductPage(QWidget):
         self.view_button_group.addButton(rack_button, 2)
         switcher_layout.insertWidget(0, rack_button)
         self.add_rack_btn = QPushButton('新增机柜')
+        self.add_rack_btn.setObjectName('addRackBtn')
+        self.add_rack_btn.setIcon(dialog_icon('rack.svg'))
         self.add_rack_btn.setMinimumHeight(36)
         self.add_rack_btn.clicked.connect(lambda: self.edit_rack())
         title_layout.addWidget(self.add_rack_btn)
@@ -1647,7 +1694,8 @@ class ProductPage(QWidget):
         title_layout.addWidget(self.schedule_btn)
         self.schedule_btn.hide()
 
-        self.add_server_btn = PrimaryPushButton("添加")
+        self.add_server_btn = PrimaryPushButton("添加设备")
+        self.add_server_btn.setIcon(FIF.ADD.icon(color=Qt.GlobalColor.white))
         self.add_server_btn.setObjectName("addServerBtn")
         self.add_server_btn.setMinimumHeight(36)
         self.add_server_btn.setMinimumWidth(100)
@@ -1656,20 +1704,27 @@ class ProductPage(QWidget):
 
         layout.addLayout(title_layout)
 
-        filter_row = QHBoxLayout()
+        filter_panel = QFrame()
+        filter_panel.setObjectName('deviceFilterPanel')
+        filter_row = QHBoxLayout(filter_panel)
+        filter_row.setContentsMargins(10, 8, 10, 8)
+        filter_row.setSpacing(10)
         self.search_input = QLineEdit()
         self.search_input.setPlaceholderText('搜索设备名称、IP、产品或机柜')
+        self.search_input.setObjectName('deviceSearch')
         self.search_input.setMinimumHeight(34)
         self.search_input.setClearButtonEnabled(True)
         self.search_input.textChanged.connect(self.update_server_list)
         self.room_combo = QComboBox()
+        self.room_combo.setObjectName('roomFilter')
         self.room_combo.addItem('全部机房', None)
         self.room_combo.setMinimumHeight(34)
         self.room_combo.setMinimumWidth(150)
         self.room_combo.currentIndexChanged.connect(self.update_server_list)
         filter_row.addWidget(self.search_input, 1)
         filter_row.addWidget(self.room_combo)
-        layout.addLayout(filter_row)
+        filter_row.addWidget(self.view_switcher)
+        layout.addWidget(filter_panel)
 
         # 服务器列表滚动区域
         self.scroll_area = QScrollArea()
@@ -1700,13 +1755,13 @@ class ProductPage(QWidget):
         
         self.stats_label = QLabel("共 0 台服务器")
         self.stats_label.setObjectName("statsLabel")
-        self.stats_label.setStyleSheet("font-size: 13px; color: #6b7280;")
+        self.stats_label.setStyleSheet('font-size:11px; color:#7b8d97;')
         footer_layout.addWidget(self.stats_label)
         
         footer_layout.addStretch()
         
         # 下一步按钮（连接成功后可见）
-        self.next_step_btn = PrimaryPushButton("下一步 →")
+        self.next_step_btn = PrimaryPushButton("进入巡检")
         self.next_step_btn.setObjectName("nextStepBtn")
         self.next_step_btn.setMinimumHeight(36)
         self.next_step_btn.setFixedWidth(120)
@@ -2028,6 +2083,13 @@ class ProductPage(QWidget):
     def apply_styles(self):
         """应用样式"""
         self.setStyleSheet("""
+            QFrame#deviceFilterPanel {background:white; border:1px solid #e0e8ed; border-radius:9px;}
+            QLineEdit#deviceSearch {background:#f6f9fb; color:#263f4c; border:1px solid #e4ebef; border-radius:6px; padding:0 10px; font-size:12px;}
+            QLineEdit#deviceSearch:focus {border-color:#53b8a9; background:white;}
+            QComboBox#roomFilter {background:#f6f9fb; color:#415b68; border:1px solid #e4ebef; border-radius:6px; padding:0 10px; font-size:12px;}
+            QComboBox#roomFilter::drop-down {border:0; width:24px;}
+            QPushButton#addRackBtn {background:white; border:1px solid #d9e4e9; color:#385563; border-radius:6px; padding:0 12px; font-size:12px;}
+            QPushButton#addRackBtn:hover {background:#f0f8f6; border-color:#7fc5b8;}
             /* 页面标题 */
             QLabel#pageTitle {
                 font-size: 24px;
@@ -2056,7 +2118,7 @@ class ProductPage(QWidget):
             
             /* 按钮样式 */
             QPushButton#addServerBtn {
-                background: #50C9C3;
+                background: #159b8c;
                 color: white;
                 border: none;
                 border-radius: 6px;

@@ -8,13 +8,38 @@ from PyQt6.QtGui import QPainter, QColor, QPen, QDrag, QCursor
 from PyQt6.QtWidgets import (
     QWidget, QFrame, QLabel, QPushButton, QVBoxLayout, QHBoxLayout, QGridLayout,
     QScrollArea, QDialog, QFormLayout, QLineEdit, QSpinBox, QDialogButtonBox, QApplication, QToolTip,
+    QToolButton, QMenu, QProgressBar,
 )
+from qfluentwidgets import FluentIcon as FIF
 
 from core.rack_inventory import partition_devices
 from .hardware_art import draw_cabinet, draw_server, EmptyRackIllustration
 
 UNIT_PITCH = 30
 DEVICE_MIME = 'application/x-xjtools-device'
+
+WORKSPACE_STYLE = '''
+    QFrame#rackStage, QScrollArea#deviceInspector {background:#ffffff; border:1px solid #dfe8ed; border-radius:10px;}
+    QWidget#inspectorContent {background:#ffffff;}
+    QWidget#rackCanvas {background:#eff4f7;}
+    QFrame#pendingDock {background:#f8fbfc; border:0; border-bottom:1px solid #e5edf1;}
+    QLabel[sectionTitle="true"] {font-size:13px; font-weight:600; color:#2b4958;}
+    QLabel[muted="true"] {font-size:11px; color:#80929d;}
+    QFrame#inspectionSummary {background:#f5f9fa; border:1px solid #e8eff2; border-radius:7px;}
+    QPushButton[inspectorAction="true"] {background:#ffffff; color:#405d6b; border:1px solid #dae5ea; border-radius:6px; font-size:12px; padding:0 6px;}
+    QPushButton[inspectorAction="true"]:hover {background:#eef8f5; border-color:#76bdaf; color:#147d70;}
+    QPushButton#rackAction_inspection {background:#159b8c; color:white; border-color:#159b8c; font-weight:600;}
+    QPushButton#rackAction_inspection:hover {background:#118678;}
+    QPushButton[inspectorAction="true"]:disabled {background:#f8fafb; color:#a4b1b9; border-color:#e9eff2;}
+    QToolButton#rackMenu {background:transparent; border:0; border-radius:4px;}
+    QToolButton#rackMenu:hover {background:#dfece8;}
+    QToolButton#rackMenu::menu-indicator {image:none;}
+    QScrollBar:vertical {background:transparent; width:6px; margin:2px 0;}
+    QScrollBar:horizontal {background:transparent; height:6px; margin:0 2px;}
+    QScrollBar::handle {background:#bacad3; border-radius:3px; min-height:25px; min-width:25px;}
+    QScrollBar::add-line, QScrollBar::sub-line {width:0; height:0;}
+    QScrollBar::add-page, QScrollBar::sub-page {background:transparent;}
+'''
 
 
 def device_mime(server_id, token):
@@ -376,15 +401,32 @@ class RackView(QWidget):
         self.faces = []
         self.unassigned_buttons = {}
         self.detail_item = None
+        self.setStyleSheet(WORKSPACE_STYLE)
         layout = QHBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(16)
+        layout.setSpacing(12)
+        stage = QFrame()
+        stage.setObjectName('rackStage')
+        stage_layout = QVBoxLayout(stage)
+        stage_layout.setContentsMargins(0, 0, 0, 0)
+        stage_layout.setSpacing(0)
+        stage_header = QHBoxLayout()
+        stage_header.setContentsMargins(16, 13, 16, 12)
+        heading = plain_label('机柜工作区')
+        heading.setProperty('sectionTitle', True)
+        stage_header.addWidget(heading)
+        stage_header.addStretch()
+        count = plain_label(f'{len(page.racks)} 个机柜')
+        count.setProperty('muted', True)
+        stage_header.addWidget(count)
+        stage_layout.addLayout(stage_header)
         self.rack_scroll = QScrollArea()
         self.rack_scroll.setWidgetResizable(True)
         self.rack_scroll.setStyleSheet('QScrollArea {border:0; background:transparent;}')
         content = QWidget()
+        content.setObjectName('rackCanvas')
         body = QVBoxLayout(content)
-        body.setContentsMargins(0, 0, 2, 0)
+        body.setContentsMargins(14, 16, 14, 14)
         row = QHBoxLayout()
         row.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
         valid, unassigned, broken = partition_devices(page.racks, page.servers)
@@ -405,21 +447,31 @@ class RackView(QWidget):
             col.setContentsMargins(0, 0, 0, 0)
             title_row = QHBoxLayout()
             title = plain_label(f'{rack.get("code", "")}  /  {rack.get("name", "")}')
-            title.setStyleSheet('font-size:15px; font-weight:600; color:#263f4b;')
+            title.setStyleSheet('font-size:13px; font-weight:600; color:#2a4856;')
             title_row.addWidget(title, 1)
-            edit = QPushButton('编辑')
-            edit.setFixedWidth(44)
-            edit.clicked.connect(lambda checked=False, r=rack: self.rack_edit.emit(r))
-            title_row.addWidget(edit)
-            delete = QPushButton('删除')
-            delete.setFixedWidth(44)
-            delete.clicked.connect(lambda checked=False, r=rack: self.rack_delete.emit(r))
-            title_row.addWidget(delete)
+            menu_button = QToolButton()
+            menu_button.setObjectName('rackMenu')
+            menu_button.setIcon(FIF.SETTING.icon())
+            menu_button.setFixedSize(28, 28)
+            menu_button.setToolTip('机柜管理')
+            menu_button.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
+            menu = QMenu(menu_button)
+            menu.addAction('编辑机柜').triggered.connect(lambda checked=False, r=rack: self.rack_edit.emit(r))
+            menu.addAction('删除机柜').triggered.connect(lambda checked=False, r=rack: self.rack_delete.emit(r))
+            menu_button.setMenu(menu)
+            title_row.addWidget(menu_button)
             col.addLayout(title_row)
             used = sum(s['rack_height_u'] for s in servers)
             caption = plain_label(f'{rack.get("room") or "未分配机房"} · {rack["units"]}U  |  已用 {used}U / 空闲 {rack["units"]-used}U')
-            caption.setStyleSheet('font-size:11px; color:#687e89; padding:3px 0 6px;')
+            caption.setStyleSheet('font-size:10px; color:#80939e; padding:0 0 3px;')
             col.addWidget(caption)
+            capacity_bar = QProgressBar()
+            capacity_bar.setRange(0, rack['units'])
+            capacity_bar.setValue(used)
+            capacity_bar.setTextVisible(False)
+            capacity_bar.setFixedHeight(3)
+            capacity_bar.setStyleSheet('QProgressBar {background:#dbe5ea; border:0; border-radius:1px;} QProgressBar::chunk {background:#2baa98; border-radius:1px;}')
+            col.addWidget(capacity_bar)
             face = RackFace(rack, servers, page=page)
             for server in servers:
                 button = face.device_buttons[server['id']]
@@ -435,55 +487,85 @@ class RackView(QWidget):
         if not self.faces:
             if not page.racks:
                 empty = QWidget()
-                empty_layout = QVBoxLayout(empty)
-                empty_layout.setContentsMargins(8, 0, 8, 8)
+                empty_layout = QHBoxLayout(empty)
+                empty_layout.setContentsMargins(2, 8, 2, 8)
                 empty_layout.addWidget(NewRackDropTarget(page))
-                caption = plain_label('拖动服务器到此处，自动创建 42U 机柜并从 U01 上架')
-                caption.setAlignment(Qt.AlignmentFlag.AlignCenter)
-                caption.setStyleSheet('font-size:12px; color:#687e89;')
-                empty_layout.addWidget(caption)
+                empty_copy = QVBoxLayout()
+                empty_copy.setSpacing(12)
+                empty_copy.addStretch()
+                empty_title = plain_label('开始布置机柜')
+                empty_title.setStyleSheet('font-size:16px; font-weight:600; color:#2c4a59;')
+                empty_copy.addWidget(empty_title)
+                caption = plain_label('将待上架服务器拖入左侧机柜，\n自动创建 42U 机柜并从 U01 上架。')
+                caption.setStyleSheet('font-size:11px; color:#81949f;')
+                empty_copy.addWidget(caption)
                 create = QPushButton('创建第一个机柜')
                 create.setObjectName('createFirstRack')
-                create.setMinimumHeight(36)
+                create.setFixedHeight(34)
+                create.setProperty('inspectorAction', True)
                 create.clicked.connect(lambda: page.edit_rack())
-                empty_layout.addWidget(create)
+                empty_copy.addWidget(create)
+                empty_copy.addStretch()
+                empty_layout.addLayout(empty_copy)
                 row.addWidget(empty)
             else:
                 row.addWidget(plain_label('暂无匹配机柜，请调整搜索和机房筛选。'))
-        for title, devices in [('待上架设备', unassigned), ('位置待修复 · 请编辑设备位置', broken)]:
-            devices = [s for s in devices if matches(s)]
-            if not devices:
-                continue
-            label = plain_label(f'{title}（{len(devices)}） · 按住服务器拖入机柜')
-            label.setStyleSheet('font-size:14px; font-weight:600; padding-top:12px; color:#44616d;')
-            body.addWidget(label)
-            tray = QGridLayout()
-            tray.setAlignment(Qt.AlignmentFlag.AlignLeft)
-            for index, server in enumerate(devices):
+        pending = [s for s in unassigned + broken if matches(s)]
+        if pending:
+            self.pending_dock = QFrame()
+            self.pending_dock.setObjectName('pendingDock')
+            pending_layout = QVBoxLayout(self.pending_dock)
+            pending_layout.setContentsMargins(14, 10, 14, 8)
+            pending_layout.setSpacing(6)
+            dock_header = QHBoxLayout()
+            dock_title = plain_label(f'待上架  {len(pending)}')
+            dock_title.setProperty('sectionTitle', True)
+            dock_header.addWidget(dock_title)
+            dock_header.addStretch()
+            hint = plain_label('按住设备拖入机柜')
+            hint.setProperty('muted', True)
+            dock_header.addWidget(hint)
+            pending_layout.addLayout(dock_header)
+            dock_scroll = QScrollArea()
+            dock_scroll.setWidgetResizable(False)
+            dock_scroll.setFixedHeight(70)
+            dock_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+            dock_scroll.setStyleSheet('QScrollArea {border:0; background:transparent;}')
+            tray_widget = QWidget()
+            tray = QHBoxLayout(tray_widget)
+            tray.setContentsMargins(0, 0, 0, 4)
+            tray.setSpacing(10)
+            for server in pending:
                 button = RackDeviceButton(server, page=page)
                 button.setObjectName('unassignedDevice_' + str(server.get('id')))
                 button.setFixedSize(260, 54)
-                button.setToolTip(f'{server.get("name") or server.get("host", "设备")}\n{server.get("host", "")}\n按住拖动到机柜上架，单击查看详情')
+                repair = '位置待修复 · ' if server in broken else ''
+                button.setToolTip(f'{repair}{server.get("name") or server.get("host", "设备")}\n{server.get("host", "")}\n按住拖动到机柜上架，单击查看详情')
                 button.setAccessibleName(button.toolTip())
                 button.clicked.connect(lambda checked=False, sid=server.get('id'): self.select_device(sid))
-                tray.addWidget(button, index // 2, index % 2)
+                tray.addWidget(button)
                 self.unassigned_buttons[server.get('id')] = button
-            body.addLayout(tray)
+            tray_widget.adjustSize()
+            dock_scroll.setWidget(tray_widget)
+            pending_layout.addWidget(dock_scroll)
+            stage_layout.addWidget(self.pending_dock)
         body.addLayout(row)
         body.addStretch()
         self.rack_scroll.setWidget(content)
-        layout.addWidget(self.rack_scroll, 1)
+        stage_layout.addWidget(self.rack_scroll, 1)
+        layout.addWidget(stage, 1)
         self.detail_scroll = QScrollArea()
         self.detail_scroll.setWidgetResizable(True)
         self.detail_scroll.setFixedWidth(274)
-        self.detail_scroll.setStyleSheet('QScrollArea {background:#f6f9fa; border:1px solid #dce6e9; border-radius:8px;}')
+        self.detail_scroll.setObjectName('deviceInspector')
         self.detail = QWidget()
+        self.detail.setObjectName('inspectorContent')
         self.detail_layout = QVBoxLayout(self.detail)
-        self.detail_layout.setContentsMargins(12, 14, 12, 14)
-        self.detail_layout.setSpacing(12)
+        self.detail_layout.setContentsMargins(14, 14, 14, 14)
+        self.detail_layout.setSpacing(9)
         self.detail_scroll.setWidget(self.detail)
         layout.addWidget(self.detail_scroll)
-        self.setMinimumHeight(540)
+        self.setMinimumHeight(480)
         self.select_device(selected_id)
 
     def select_device(self, server_id):
@@ -500,18 +582,33 @@ class RackView(QWidget):
         while self.detail_layout.count():
             item = self.detail_layout.takeAt(0)
             if item.widget():
-                item.widget().deleteLater()
+                widget = item.widget()
+                widget.hide()
+                widget.setParent(None)
+                widget.deleteLater()
         self.detail_item = None
         server = next((s for s in self.page.servers if s.get('id') == server_id), None)
-        self.detail_layout.addWidget(plain_label('设备详情'))
+        heading = plain_label('设备详情')
+        heading.setProperty('sectionTitle', True)
+        self.detail_layout.addWidget(heading)
         if server is None:
-            self.detail_layout.addWidget(plain_label('点击机柜中的设备查看详情和运维操作；点击空槽添加设备。'))
+            self.detail_layout.addStretch()
+            icon = QLabel()
+            icon.setPixmap(FIF.IOT.icon().pixmap(36, 36))
+            icon.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            self.detail_layout.addWidget(icon)
+            title = plain_label('选择一台设备')
+            title.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            title.setStyleSheet('font-size:14px; font-weight:600; color:#486574;')
+            self.detail_layout.addWidget(title)
+            hint = plain_label('点击服务器查看设备信息\n和可用的运维操作')
+            hint.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            hint.setStyleSheet('font-size:11px; color:#8b9da7;')
+            self.detail_layout.addWidget(hint)
             self.detail_layout.addStretch()
             return
-        from .product_page import ServerGridItem
-        item = ServerGridItem(server)
-        item.setMaximumSize(16777215, 240)
-        item.setMinimumHeight(190)
+        from .product_page import ServerDetailItem
+        item = ServerDetailItem(server)
         item.set_connected(server_id == self.page.connected_server_id, self.page.is_root if server_id == self.page.connected_server_id else False)
         for signal, action in [(item.connect_clicked, 'connect'), (item.edit_clicked, 'edit'),
                                (item.delete_clicked, 'delete'), (item.switch_root_clicked, 'root'),
@@ -525,33 +622,62 @@ class RackView(QWidget):
             position = f'{rack.get("code")} / U{start:02}–U{start+height-1:02} / {height}U'
         else:
             position = '待上架 / 位置待修复' if server.get('rack_id') else '待上架'
-        self.detail_layout.addWidget(plain_label(position))
         state = self.page.device_states.get(server_id) or ('已连接' if server_id == self.page.connected_server_id else '未连接')
-        self.detail_layout.addWidget(plain_label(f'SSH：{state}'))
+        metadata = QWidget()
+        meta_layout = QVBoxLayout(metadata)
+        meta_layout.setContentsMargins(2, 3, 2, 3)
+        meta_layout.setSpacing(5)
+        position_title = plain_label('机柜位置')
+        position_title.setProperty('muted', True)
+        meta_layout.addWidget(position_title)
+        position_row = QHBoxLayout()
+        position_label = plain_label(position)
+        position_label.setStyleSheet('font-size:11px; color:#3f5b69;')
+        position_row.addWidget(position_label, 1)
+        state_badge = plain_label('● ' + state)
+        state_badge.setStyleSheet('color:#138a79; font-size:10px;' if server_id == self.page.connected_server_id else 'color:#82959f; font-size:10px;')
+        position_row.addWidget(state_badge)
+        meta_layout.addLayout(position_row)
+        self.detail_layout.addWidget(metadata)
         summary = self.page.inspection_history.get(server_id)
         if summary:
-            text = f'最近巡检：{summary.get("time", "")}\n{summary.get("message", "")}\n'
+            text = f'{summary.get("time", "")}\n'
             text += ' / '.join(f'{name} {summary.get("counts", {}).get(code, 0)}' for code, name in
                                [('normal', '正常'), ('warning', '警告'), ('error', '异常'), ('unknown', '未获取')])
         else:
-            text = '最近巡检：尚未巡检'
+            text = '尚未巡检'
+        history = QFrame()
+        history.setObjectName('inspectionSummary')
+        history_layout = QVBoxLayout(history)
+        history_layout.setContentsMargins(10, 9, 10, 9)
+        history_layout.setSpacing(4)
+        history_title = plain_label('最近巡检')
+        history_title.setStyleSheet('font-size:11px; font-weight:600; color:#506b78;')
+        history_layout.addWidget(history_title)
         history_label = plain_label(text)
-        history_label.setStyleSheet('color:#687e89; font-size:11px;')
-        self.detail_layout.addWidget(history_label)
-        if server_id == self.page.connected_server_id:
-            disconnect = QPushButton('断开连接')
-            disconnect.setMinimumHeight(32)
-            disconnect.clicked.connect(lambda: self.action_requested.emit(server, 'connect'))
-            self.detail_layout.addWidget(disconnect)
-        for label, action in [('一键巡检', 'inspection'), ('AI 排障', 'troubleshoot'), ('日志收集', 'logs'),
-                              ('实时监控', 'monitor'), ('调整位置 / 下架', 'edit'), ('查看最近报告', 'report')]:
+        history_label.setStyleSheet('color:#8a9ca6; font-size:10px;')
+        history_layout.addWidget(history_label)
+        self.detail_layout.addWidget(history)
+        actions = QWidget()
+        action_layout = QGridLayout(actions)
+        action_layout.setContentsMargins(0, 3, 0, 0)
+        action_layout.setSpacing(8)
+        action_layout.setColumnStretch(0, 1)
+        action_layout.setColumnStretch(1, 1)
+        for index, (label, action) in enumerate([('一键巡检', 'inspection'), ('AI 排障', 'troubleshoot'),
+                                                ('日志收集', 'logs'), ('实时监控', 'monitor'),
+                                                ('调整位置 / 下架', 'edit'), ('最近报告', 'report')]):
             button = QPushButton(label)
-            button.setMinimumHeight(33)
+            button.setFixedHeight(36 if index < 4 else 30)
             button.setObjectName('rackAction_' + action)
+            button.setProperty('inspectorAction', True)
+            if action == 'edit':
+                button.setToolTip('修改机柜、U 位，或选择暂不上架')
             button.clicked.connect(lambda checked=False, a=action: self.action_requested.emit(server, a))
             if action == 'report':
                 button.setEnabled(bool(summary and summary.get('report_path')))
-            self.detail_layout.addWidget(button)
+            action_layout.addWidget(button, index // 2, index % 2)
+        self.detail_layout.addWidget(actions)
         self.detail_layout.addStretch()
         if changed:
             self.selection_timer.start(0)
