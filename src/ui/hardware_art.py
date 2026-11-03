@@ -61,7 +61,8 @@ def draw_server(painter, rect, name='', address='', connected=False, selected=Fa
         for y in (rect.top() + 7, rect.bottom() - 7):
             screw(painter, x, y)
     # A physical nameplate remains readable above the hot-swap hardware.
-    plate = QRectF(body.left() + 5, body.top() + 3, body.width() - 35, 15)
+    compact = rect.height() < 38
+    plate = QRectF(body.left() + 5, body.top() + 2, body.width() - 35, 12 if compact else 15)
     painter.fillRect(plate, QColor('#16252f'))
     painter.setFont(QFont('Microsoft YaHei', 8))
     painter.setPen(QColor('#e5edf1'))
@@ -79,7 +80,8 @@ def draw_server(painter, rect, name='', address='', connected=False, selected=Fa
     painter.setPen(QPen(QColor(color), 1.5))
     painter.drawEllipse(QRectF(cx - 5, cy - 5, 10, 10))
     painter.drawLine(int(cx), int(cy - 6), int(cx), int(cy - 1))
-    bottom = QRectF(body.left() + 5, body.top() + 22, body.width() - 10, max(9, body.height() - 27))
+    hardware_top = body.top() + (17 if compact else 22)
+    bottom = QRectF(body.left() + 5, hardware_top, body.width() - 10, max(3, body.bottom() - hardware_top - 3))
     # Three hot-swap drive columns, two rows on taller devices.
     drive_width = bottom.width() * 0.61
     rows = 2 if bottom.height() > 25 else 1

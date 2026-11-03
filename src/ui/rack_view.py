@@ -1,18 +1,93 @@
 """Qt rack front elevations and device details; emits requests, never opens SSH."""
 
 from uuid import uuid4
+import json
 
-from PyQt6.QtCore import Qt, pyqtSignal, QTimer, QRectF
-from PyQt6.QtGui import QPainter, QColor, QPen
+from PyQt6.QtCore import Qt, pyqtSignal, QTimer, QRectF, QMimeData, QPoint
+from PyQt6.QtGui import QPainter, QColor, QPen, QDrag, QCursor
 from PyQt6.QtWidgets import (
     QWidget, QFrame, QLabel, QPushButton, QVBoxLayout, QHBoxLayout, QGridLayout,
-    QScrollArea, QDialog, QFormLayout, QLineEdit, QSpinBox, QDialogButtonBox,
+    QScrollArea, QDialog, QFormLayout, QLineEdit, QSpinBox, QDialogButtonBox, QApplication, QToolTip,
 )
 
 from core.rack_inventory import partition_devices
 from .hardware_art import draw_cabinet, draw_server, EmptyRackIllustration
 
-UNIT_PITCH = 44
+UNIT_PITCH = 30
+DEVICE_MIME = 'application/x-xjtools-device'
+
+
+def device_mime(server_id, token):
+    mime = QMimeData()
+    mime.setData(DEVICE_MIME, json.dumps({'id': server_id, 'token': token}).encode('utf-8'))
+    return mime
+
+
+def dragged_device(mime, page):
+    if page is None or not mime.hasFormat(DEVICE_MIME):
+        return None
+    payload = bytes(mime.data(DEVICE_MIME))
+    if len(payload) > 1024:
+        return None
+    try:
+        data = json.loads(payload)
+        if not isinstance(data, dict) or data.get('token') != page.drag_token or not isinstance(data.get('id'), str):
+            return None
+        return page.drag_device(data['id'])
+    except (ValueError, UnicodeError):
+        return None
+
+
+class NewRackDropTarget(EmptyRackIllustration):
+    def __init__(self, page):
+        super().__init__()
+        self.page = page
+        self.setAcceptDrops(True)
+        self.setToolTip('将待上架服务器拖到此处：自动创建 42U 机柜并从 U01 上架')
+        self.highlighted = False
+
+    def can_drop(self, mime):
+        server = dragged_device(mime, self.page)
+        if server is None or self.page.racks:
+            return False
+        height = server.get('rack_height_u', 1)
+        return isinstance(height, int) and not isinstance(height, bool) and 1 <= height <= 42
+
+    def dragEnterEvent(self, event):
+        self.dragMoveEvent(event)
+
+    def dragMoveEvent(self, event):
+        self.highlighted = self.can_drop(event.mimeData())
+        if self.highlighted:
+            event.setDropAction(Qt.DropAction.MoveAction)
+            event.accept()
+        else:
+            event.ignore()
+        self.update()
+
+    def dragLeaveEvent(self, event):
+        self.highlighted = False
+        self.update()
+        event.accept()
+
+    def dropEvent(self, event):
+        server = dragged_device(event.mimeData(), self.page)
+        accepted = self.can_drop(event.mimeData()) and self.page.create_rack_for_server(server['id'])
+        self.highlighted = False
+        self.update()
+        if accepted:
+            event.setDropAction(Qt.DropAction.MoveAction)
+            event.accept()
+        else:
+            event.ignore()
+
+    def paintEvent(self, event):
+        super().paintEvent(event)
+        if self.highlighted:
+            painter = QPainter(self)
+            painter.setPen(QPen(QColor('#38bda8'), 3))
+            painter.setBrush(QColor(41, 160, 137, 35))
+            painter.drawRoundedRect(QRectF(self.rect()).adjusted(3, 3, -3, -3), 8, 8)
 
 
 def plain_label(text, parent=None):
@@ -65,8 +140,9 @@ class RackFace(QFrame):
     device_selected = pyqtSignal(str)
     empty_selected = pyqtSignal(str, int)
 
-    def __init__(self, rack, devices, parent=None):
+    def __init__(self, rack, devices, parent=None, page=None):
         super().__init__(parent)
+        self.page = page
         self.rack, self.devices = rack, devices
         self.device_buttons, self.empty_buttons = {}, {}
         self.setObjectName('rackFace')
@@ -93,7 +169,7 @@ class RackFace(QFrame):
         for server in devices:
             start, height = server['rack_start_u'], server['rack_height_u']
             occupied.update(range(start, start + height))
-            button = RackDeviceButton(server)
+            button = RackDeviceButton(server, page=page)
             button.setProperty('device', True)
             button.setCheckable(True)
             button.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -127,7 +203,70 @@ class RackFace(QFrame):
                 self.empty_buttons[u] = button
         layout.setContentsMargins(8, 40, 8, 28)
         self.setFixedHeight(68 + units * UNIT_PITCH - 2)
+        self.setAcceptDrops(page is not None)
+        self.drop_preview = QLabel(self)
+        self.drop_preview.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+        self.drop_preview.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.drop_preview.setTextFormat(Qt.TextFormat.PlainText)
+        self.drop_preview.setWordWrap(True)
+        self.drop_preview.hide()
         self.update_status(None)
+
+    def drop_position(self, point):
+        if not 32 <= point.x() <= self.width() - 18:
+            return None
+        row = int((point.y() - 40) // UNIT_PITCH)
+        return self.rack['units'] - row if 0 <= row < self.rack['units'] else None
+
+    def dragEnterEvent(self, event):
+        if dragged_device(event.mimeData(), self.page):
+            event.acceptProposedAction()
+        else:
+            event.ignore()
+
+    def dragMoveEvent(self, event):
+        server = dragged_device(event.mimeData(), self.page)
+        start = self.drop_position(event.position().toPoint())
+        if server is None or start is None:
+            self.drop_preview.hide()
+            event.ignore()
+            return
+        candidate, error = self.page.placement_candidate(server['id'], self.rack['id'], start)
+        height = candidate['rack_height_u']
+        if not isinstance(height, int) or isinstance(height, bool) or height < 1:
+            height = 1
+        end = start + height - 1
+        top = max(40, 40 + (self.rack['units'] - end) * UNIT_PITCH)
+        visible_height = min(height, self.rack['units'] - start + 1) * UNIT_PITCH - 2
+        self.drop_preview.setGeometry(32, top, self.width() - 50, visible_height)
+        self.drop_preview.setText(error if error else f'U{start:02}–U{end:02} · 松开上架')
+        color, background = ('#dc7373', 'rgba(88, 28, 28, 215)') if error else ('#50dac1', 'rgba(20, 83, 72, 215)')
+        self.drop_preview.setStyleSheet(f'border:2px solid {color}; color:white; background:{background}; border-radius:3px; font-size:10px;')
+        self.drop_preview.show()
+        self.drop_preview.raise_()
+        if error:
+            event.ignore()
+        else:
+            event.setDropAction(Qt.DropAction.MoveAction)
+            event.accept()
+
+    def dragLeaveEvent(self, event):
+        self.drop_preview.hide()
+        event.accept()
+
+    def dropEvent(self, event):
+        server = dragged_device(event.mimeData(), self.page)
+        start = self.drop_position(event.position().toPoint())
+        self.drop_preview.hide()
+        if server is not None and start is not None:
+            _, error = self.page.placement_candidate(server['id'], self.rack['id'], start)
+            if not error and self.page.place_server(server['id'], self.rack['id'], start):
+                event.setDropAction(Qt.DropAction.MoveAction)
+                event.accept()
+                return
+            if error:
+                QToolTip.showText(self.mapToGlobal(event.position().toPoint()), error, self)
+        event.ignore()
 
     def paintEvent(self, event):
         super().paintEvent(event)
@@ -153,13 +292,60 @@ class RackFace(QFrame):
 
 
 class RackDeviceButton(QPushButton):
-    def __init__(self, server=None, parent=None):
+    def __init__(self, server=None, parent=None, page=None):
         super().__init__(parent)
         self.server = server or {}
         self.connected = False
         self.device_state = ''
+        self.page = page
+        self.press_position = None
+        self.drag_started = False
         self.setCheckable(True)
         self.setCursor(Qt.CursorShape.PointingHandCursor)
+
+    def mousePressEvent(self, event):
+        self.drag_started = False
+        self.press_position = event.position().toPoint() if event.button() == Qt.MouseButton.LeftButton else None
+        super().mousePressEvent(event)
+
+    def mouseMoveEvent(self, event):
+        if (self.page is not None and self.press_position is not None
+                and event.buttons() & Qt.MouseButton.LeftButton
+                and (event.position().toPoint() - self.press_position).manhattanLength() >= QApplication.startDragDistance()
+                and self.page.drag_device(self.server.get('id')) is not None):
+            self.drag_started = True
+            self.press_position = None
+            self.setDown(False)
+            drag = QDrag(self)
+            drag.setMimeData(device_mime(self.server['id'], self.page.drag_token))
+            drag.setPixmap(self.grab())
+            drag.setHotSpot(QPoint(min(self.width() // 2, 100), self.height() // 2))
+            page = self.page
+            view = page.rack_view
+            page.drag_active = True
+            if view:
+                view.drag_scroll.start(40)
+            try:
+                drag.exec(Qt.DropAction.MoveAction)
+            finally:
+                page.drag_active = False
+                if view:
+                    view.drag_scroll.stop()
+                # Rebuilding while QDrag.exec owns the source would delete a live native drag.
+                QTimer.singleShot(0, page.update_server_list)
+                drag.deleteLater()
+            event.accept()
+            return
+        super().mouseMoveEvent(event)
+
+    def mouseReleaseEvent(self, event):
+        self.press_position = None
+        if self.drag_started:
+            self.drag_started = False
+            self.setDown(False)
+            event.accept()
+            return
+        super().mouseReleaseEvent(event)
 
     def paintEvent(self, event):
         painter = QPainter(self)
@@ -185,6 +371,8 @@ class RackView(QWidget):
         self.selection_timer = QTimer(self)
         self.selection_timer.setSingleShot(True)
         self.selection_timer.timeout.connect(self.scroll_to_selected)
+        self.drag_scroll = QTimer(self)
+        self.drag_scroll.timeout.connect(self.auto_scroll_drag)
         self.faces = []
         self.unassigned_buttons = {}
         self.detail_item = None
@@ -232,7 +420,7 @@ class RackView(QWidget):
             caption = plain_label(f'{rack.get("room") or "未分配机房"} · {rack["units"]}U  |  已用 {used}U / 空闲 {rack["units"]-used}U')
             caption.setStyleSheet('font-size:11px; color:#687e89; padding:3px 0 6px;')
             col.addWidget(caption)
-            face = RackFace(rack, servers)
+            face = RackFace(rack, servers, page=page)
             for server in servers:
                 button = face.device_buttons[server['id']]
                 button.setProperty('matched', bool(query and matches(server)))
@@ -249,8 +437,8 @@ class RackView(QWidget):
                 empty = QWidget()
                 empty_layout = QVBoxLayout(empty)
                 empty_layout.setContentsMargins(8, 0, 8, 8)
-                empty_layout.addWidget(EmptyRackIllustration())
-                caption = plain_label('机柜外观示意 · 尚未创建机柜')
+                empty_layout.addWidget(NewRackDropTarget(page))
+                caption = plain_label('拖动服务器到此处，自动创建 42U 机柜并从 U01 上架')
                 caption.setAlignment(Qt.AlignmentFlag.AlignCenter)
                 caption.setStyleSheet('font-size:12px; color:#687e89;')
                 empty_layout.addWidget(caption)
@@ -262,24 +450,26 @@ class RackView(QWidget):
                 row.addWidget(empty)
             else:
                 row.addWidget(plain_label('暂无匹配机柜，请调整搜索和机房筛选。'))
-        body.addLayout(row)
         for title, devices in [('待上架设备', unassigned), ('位置待修复 · 请编辑设备位置', broken)]:
             devices = [s for s in devices if matches(s)]
             if not devices:
                 continue
-            label = plain_label(f'{title}（{len(devices)}）')
+            label = plain_label(f'{title}（{len(devices)}） · 按住服务器拖入机柜')
             label.setStyleSheet('font-size:14px; font-weight:600; padding-top:12px; color:#44616d;')
             body.addWidget(label)
-            for server in devices:
-                button = RackDeviceButton(server)
+            tray = QGridLayout()
+            tray.setAlignment(Qt.AlignmentFlag.AlignLeft)
+            for index, server in enumerate(devices):
+                button = RackDeviceButton(server, page=page)
                 button.setObjectName('unassignedDevice_' + str(server.get('id')))
-                button.setFixedHeight(84)
-                button.setMinimumWidth(260)
-                button.setToolTip(f'{server.get("name") or server.get("host", "设备")}\n{server.get("host", "")}\n点击查看详情并安排上架')
+                button.setFixedSize(260, 54)
+                button.setToolTip(f'{server.get("name") or server.get("host", "设备")}\n{server.get("host", "")}\n按住拖动到机柜上架，单击查看详情')
                 button.setAccessibleName(button.toolTip())
                 button.clicked.connect(lambda checked=False, sid=server.get('id'): self.select_device(sid))
-                body.addWidget(button)
+                tray.addWidget(button, index // 2, index % 2)
                 self.unassigned_buttons[server.get('id')] = button
+            body.addLayout(tray)
+        body.addLayout(row)
         body.addStretch()
         self.rack_scroll.setWidget(content)
         layout.addWidget(self.rack_scroll, 1)
@@ -372,6 +562,18 @@ class RackView(QWidget):
             if button:
                 self.rack_scroll.ensureWidgetVisible(button, 10, 50)
                 return
+
+    def auto_scroll_drag(self):
+        viewport = self.rack_scroll.viewport()
+        point = viewport.mapFromGlobal(QCursor.pos())
+        if not viewport.rect().adjusted(-15, -15, 15, 15).contains(point):
+            return
+        for bar, value, limit in [(self.rack_scroll.verticalScrollBar(), point.y(), viewport.height()),
+                                  (self.rack_scroll.horizontalScrollBar(), point.x(), viewport.width())]:
+            if value < 35:
+                bar.setValue(bar.value() - 24)
+            elif value > limit - 35:
+                bar.setValue(bar.value() + 24)
 
     def update_connected_status(self, connected_id, is_root=False):
         self.select_device(self.selected_id)

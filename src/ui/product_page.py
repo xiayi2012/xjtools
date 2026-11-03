@@ -16,6 +16,7 @@ import json
 import os
 from datetime import datetime
 from pathlib import Path
+from uuid import uuid4
 
 import base64
 import hashlib
@@ -1560,6 +1561,8 @@ class ProductPage(QWidget):
         self.rack_view = None
         self.selected_device_id = None
         self.device_states = {}
+        self.drag_token = str(uuid4())
+        self.drag_active = False
         self.inspection_history = {}
         self.inventory_error = ''
         self.product_sections = []
@@ -1757,8 +1760,42 @@ class ProductPage(QWidget):
             self.room_combo.addItem(room or '未分配机房', room)
         self.room_combo.setCurrentIndex(max(0, self.room_combo.findData(current_room)))
         self.room_combo.blockSignals(False)
-        self.update_server_list()
+        if not self.drag_active:
+            self.update_server_list()
         return True
+
+    def drag_device(self, server_id):
+        if self.inventory_error or self.device_states.get(server_id) in ('连接中', '巡检中'):
+            return None
+        return next((s for s in self.servers if s.get('id') == server_id), None)
+
+    def placement_candidate(self, server_id, rack_id, start, racks=None):
+        server = self.drag_device(server_id)
+        if server is None:
+            return None, '设备不存在或正在连接 / 巡检，请稍后重试'
+        candidate = dict(server, rack_id=rack_id, rack_start_u=start,
+                         rack_height_u=server.get('rack_height_u', 1))
+        error = placement_error(candidate, self.racks if racks is None else racks, self.servers)
+        return candidate, error
+
+    def place_server(self, server_id, rack_id, start, racks=None):
+        candidate, error = self.placement_candidate(server_id, rack_id, start, racks)
+        if error:
+            QMessageBox.warning(self, '无法上架', error)
+            return False
+        previous_selection = self.selected_device_id
+        self.selected_device_id = server_id
+        result = self.commit_inventory([candidate if s.get('id') == server_id else s for s in self.servers], racks)
+        if not result:
+            self.selected_device_id = previous_selection
+        return result
+
+    def create_rack_for_server(self, server_id):
+        # First drop creates the enclosure and placement in one atomic transaction.
+        if self.racks:
+            return False
+        rack = dict(id=str(uuid4()), code='A01', name='默认机柜', room='', units=42)
+        return self.place_server(server_id, rack['id'], 1, [rack])
 
     def load_servers(self):
         """加载服务器列表"""
