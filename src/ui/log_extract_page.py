@@ -13,7 +13,7 @@ from pathlib import Path
 from PyQt6.QtCore import Qt, QThread, pyqtSignal, QSize
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QFrame,
-    QListWidget, QListWidgetItem, QTextEdit, QMessageBox, QInputDialog,
+    QListWidget, QListWidgetItem, QTextEdit, QMessageBox,
     QLineEdit, QFileDialog, QSplitter, QDialog, QFormLayout, QSpinBox,
     QDialogButtonBox, QTabWidget, QScrollArea, QAbstractItemView
 )
@@ -28,25 +28,6 @@ def get_config_dir() -> Path:
 
 def _shell_quote(value: str) -> str:
     return "'" + str(value).replace("'", "'\"'\"'") + "'"
-
-
-class ClickableTitle(QLabel):
-    clicked = pyqtSignal()
-
-    def mouseReleaseEvent(self, event):
-        if event.button() == Qt.MouseButton.LeftButton:
-            self.clicked.emit()
-        super().mouseReleaseEvent(event)
-
-
-class OpsModeButton(QPushButton):
-    def enterEvent(self, event):
-        self.setText("退出运维模式")
-        super().enterEvent(event)
-
-    def leaveEvent(self, event):
-        self.setText("运维模式")
-        super().leaveEvent(event)
 
 
 class LogExtractWorker(QThread):
@@ -152,8 +133,6 @@ class LogExtractPage(QWidget):
         self.setObjectName("log_extract_page")
         self.ssh_client = None
         self.product_name = "通用"
-        self.ops_mode = False
-        self._title_clicks = []
         self.worker = None
         self.ftp_config = {}
         self.init_ui()
@@ -173,21 +152,18 @@ class LogExtractPage(QWidget):
 
         header = QHBoxLayout()
         title_box = QVBoxLayout()
-        self.title_label = ClickableTitle("日志收集")
+        self.title_label = QLabel("日志收集")
         self.title_label.setObjectName("pageTitle")
-        self.title_label.clicked.connect(self._on_title_clicked)
         title_box.addWidget(self.title_label)
         self.product_label = QLabel("当前产品：通用")
         self.product_label.setObjectName("pageSubtitle")
         title_box.addWidget(self.product_label)
         header.addLayout(title_box)
         header.addStretch()
-        self.mode_label = OpsModeButton("运维模式")
+        self.mode_label = QLabel("运维模式")
         self.mode_label.setObjectName("modeBadge")
         self.mode_label.setFixedSize(118, 30)
-        self.mode_label.setToolTip("退出运维模式")
-        self.mode_label.clicked.connect(lambda: self.set_ops_mode(False))
-        self.mode_label.hide()
+        self.mode_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         header.addWidget(self.mode_label)
         layout.addLayout(header)
 
@@ -242,7 +218,6 @@ class LogExtractPage(QWidget):
         self.rule_scroll.setWidget(self.rule_container)
         self.rule_scroll.setMinimumHeight(360)
         ops_layout.addWidget(self.rule_scroll, 1)
-        self.ops_panel.hide()
         extract_layout.addWidget(self.ops_panel, 1)
 
         self.logs_tab = QWidget()
@@ -280,19 +255,15 @@ class LogExtractPage(QWidget):
         self.tabs.addTab(self.extract_tab, "日志收集")
         self.tabs.addTab(self.logs_tab, "日志列表与预览")
         layout.addWidget(self.tabs, 1)
-        self.tabs.setTabVisible(0, False)
-        self.tabs.setCurrentWidget(self.logs_tab)
+        self.tabs.setCurrentWidget(self.extract_tab)
 
         self.setStyleSheet("""
             QWidget#log_extract_page { background: #f8fafc; }
             QLabel#pageTitle { font-size: 24px; font-weight: 700; color: #0f172a; }
             QLabel#pageSubtitle { font-size: 13px; color: #64748b; }
-            QPushButton#modeBadge {
+            QLabel#modeBadge {
                 background: #ffffff; color: #334155; border: 1px solid #cbd5e1;
                 border-radius: 8px; padding: 4px 10px; font-weight: 600;
-            }
-            QPushButton#modeBadge:hover {
-                background: #f0fdfa; border-color: #50C9C3; color: #0f766e;
             }
             QFrame#opsPanel, QFrame#ruleCard {
                 background: #ffffff; border: 1px solid #dbe3ee; border-radius: 8px;
@@ -370,34 +341,10 @@ class LogExtractPage(QWidget):
         self.ftp_btn.setVisible(is_otp)
 
     def set_product(self, product_name: str):
-        if product_name != self.product_name:
-            self.set_ops_mode(False)
         self.product_name = product_name or "通用"
         self.product_label.setText(f"当前产品：{self.product_name}")
         self.refresh_rule_cards()
         self.refresh_log_list()
-
-    def set_ops_mode(self, enabled: bool):
-        self.ops_mode = enabled
-        self.ops_panel.setVisible(enabled)
-        self.mode_label.setVisible(enabled)
-        self.tabs.setTabVisible(0, enabled)
-        if enabled:
-            self.tabs.setCurrentWidget(self.extract_tab)
-        elif self.tabs.currentWidget() == self.extract_tab:
-            self.tabs.setCurrentWidget(self.logs_tab)
-
-    def _on_title_clicked(self):
-        now = time.time()
-        self._title_clicks = [t for t in self._title_clicks if now - t < 2]
-        self._title_clicks.append(now)
-        if len(self._title_clicks) >= 3:
-            self._title_clicks.clear()
-            password, ok = QInputDialog.getText(self, "进入运维模式", "请输入运维密码:", QLineEdit.EchoMode.Password)
-            if ok and password in {"26515", "我爱畅哥", "520wc"}:
-                self.set_ops_mode(True)
-            elif ok:
-                QMessageBox.warning(self, "密码错误", "运维密码不正确")
 
     def read_config(self) -> dict:
         path = self.config_path()

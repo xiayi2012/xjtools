@@ -1,14 +1,13 @@
-"""Application guide home page."""
-
-from PyQt6.QtCore import Qt, pyqtSignal
-from PyQt6.QtWidgets import (
-    QFrame, QGridLayout, QHBoxLayout, QLabel, QPushButton, QVBoxLayout, QWidget
-)
+"""Home workspace for server inspection and troubleshooting."""
+import sys
+from pathlib import Path
+from PyQt6.QtCore import QRectF, Qt, pyqtSignal
+from PyQt6.QtGui import QColor, QGuiApplication, QPixmap, QPainter
+from PyQt6.QtSvg import QSvgRenderer
+from PyQt6.QtWidgets import QFrame, QGridLayout, QHBoxLayout, QLabel, QPushButton, QVBoxLayout, QWidget, QScrollArea
 
 
 class HomePage(QWidget):
-    """首页：软件配置和使用引导。"""
-
     start_clicked = pyqtSignal()
     ai_config_clicked = pyqtSignal()
     server_config_clicked = pyqtSignal()
@@ -18,158 +17,134 @@ class HomePage(QWidget):
 
     def __init__(self, parent=None):
         super().__init__(parent)
+        self.setObjectName('home_page')
         self.init_ui()
 
     def init_ui(self):
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(32, 28, 32, 28)
-        layout.setSpacing(18)
-
-        hero = QFrame()
-        hero.setObjectName("hero")
-        hero_layout = QVBoxLayout(hero)
-        hero_layout.setContentsMargins(28, 24, 28, 24)
-        hero_layout.setSpacing(10)
-
-        title = QLabel("使用指导：")
-        title.setObjectName("heroTitle")
-        hero_layout.addWidget(title)
-
-        subtitle = QLabel(
-            "AI 智能运维工具由安恒终端安全产品线自研，高度应用 AI 能力，可实现软件产品自动化巡检、"
-            "全时段运行状态监控、AI 智能故障排错，以及故障日志一键收集，精准溯源问题根源，"
-            "以智能化赋能运维提质增效，保障系统稳定可靠运行。"
-        )
-        subtitle.setObjectName("heroSubtitle")
-        subtitle.setWordWrap(True)
-        hero_layout.addWidget(subtitle)
-
-        layout.addWidget(hero)
-
-        section_title = QLabel("使用步骤")
-        section_title.setObjectName("sectionTitle")
-        layout.addWidget(section_title)
-
-        grid = QGridLayout()
-        grid.setSpacing(14)
-        steps = [
-            ("01", "配置大模型", "选择大模型厂商，填写 API Key、Base URL 和模型名称，用于AI分析、报告生成和排障。", "去配置", self.ai_config_clicked),
-            ("02", "添加服务器", "在配置管理中添加产品和服务器，填写SSH连接信息，并可立即连接测试。", "去添加", self.server_config_clicked),
-            ("03", "选择巡检项", "确认当前产品的默认巡检项、产品脚本和自定义脚本，取消不需要执行的项目。", "去选择", self.inspection_clicked),
-            ("04", "执行AI巡检", "连接服务器后执行巡检，查看巡检输出和预览，并导出AI分析报告。", "去巡检", self.inspection_clicked),
-            ("05", "AI智能排障", "服务器连接后输入故障现象，结合知识库、本地搜索和远程命令辅助定位问题。", "去排障", self.troubleshoot_clicked),
-            ("06", "系统监护", "设置自动巡检任务，到点自动连接服务器并生成巡检报告。", "去设置", self.system_guard_clicked),
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.Shape.NoFrame)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        surface = QWidget()
+        surface.setObjectName('homeSurface')
+        layout = QVBoxLayout(surface)
+        layout.setContentsMargins(32, 26, 32, 28)
+        layout.setSpacing(16)
+        title = QLabel('工作台')
+        title.setObjectName('pageTitle')
+        layout.addWidget(title)
+        groups = [
+            ('配置与连接', [
+                ('connect.svg', '设备管理', '添加服务器、管理连接，开始远程运维。', '管理设备', self.server_config_clicked, 'server'),
+                ('AI.svg', '大模型配置', '配置模型服务，用于巡检分析与报告生成。', '配置模型', self.ai_config_clicked, 'model'),
+            ]),
+            ('巡检与排障', [
+                ('troubleshoot.svg', 'AI 排障', '结合故障现象与知识库，辅助定位问题。', '进入排障', self.troubleshoot_clicked, 'troubleshoot'),
+                ('xunjian2.svg', '一键巡检', '执行服务器检查，查看输出并生成分析报告。', '开始巡检', self.inspection_clicked, 'inspect'),
+                ('jiaoben.svg', '巡检项目', '选择默认检查项、产品脚本与自定义脚本。', '选择项目', self.inspection_clicked, 'scripts'),
+                ('calendar.svg', '定时巡检', '设置执行计划，自动检查并留存巡检报告。', '设置计划', self.system_guard_clicked, 'schedule'),
+            ]),
         ]
-
-        for index, step in enumerate(steps):
-            card = self._step_card(*step)
-            grid.addWidget(card, index // 2, index % 2)
-        layout.addLayout(grid)
-        layout.addStretch()
-
+        for label, entries in groups:
+            section = QLabel(label)
+            section.setObjectName('sectionTitle')
+            layout.addWidget(section)
+            grid = QGridLayout()
+            grid.setSpacing(16)
+            grid.setColumnStretch(0, 1)
+            grid.setColumnStretch(1, 1)
+            for index, entry in enumerate(entries):
+                grid.addWidget(self._action_card(*entry), index // 2, index % 2)
+            layout.addLayout(grid)
+        layout.addStretch(1)
+        scroll.setWidget(surface)
+        outer.addWidget(scroll)
         self.apply_styles()
 
-    def _step_card(self, number: str, title: str, desc: str, button_text: str, signal) -> QFrame:
+    @staticmethod
+    def _icon_pixmap(filename):
+        root = Path(sys._MEIPASS) if getattr(sys, 'frozen', False) else Path(__file__).resolve().parents[2]
+        path = root / 'icons' / filename
+        screen = QGuiApplication.primaryScreen()
+        scale = screen.devicePixelRatio() if screen else 1
+        pixmap = QPixmap(round(26 * scale), round(26 * scale))
+        pixmap.setDevicePixelRatio(scale)
+        pixmap.fill(Qt.GlobalColor.transparent)
+        if path.exists():
+            svg = path.read_bytes().replace(b'#ffffff', b'#127c78').replace(b'#FFFFFF', b'#127c78')
+            renderer = QSvgRenderer(svg)
+            painter = QPainter(pixmap)
+            renderer.render(painter, QRectF(0, 0, 26, 26))
+            painter.setCompositionMode(QPainter.CompositionMode.CompositionMode_SourceIn)
+            painter.fillRect(pixmap.rect(), QColor('#127c78'))
+            painter.end()
+        return pixmap
+
+    def _action_card(self, icon, title, description, button_text, signal, key):
+        featured = key == 'inspect'
         card = QFrame()
-        card.setObjectName("stepCard")
-        card_layout = QVBoxLayout(card)
-        card_layout.setContentsMargins(18, 16, 18, 16)
-        card_layout.setSpacing(10)
-
-        header = QHBoxLayout()
-        badge = QLabel(number)
-        badge.setObjectName("stepBadge")
+        card.setObjectName('actionCard')
+        card.setProperty('featured', featured)
+        card.setMinimumHeight(155)
+        box = QVBoxLayout(card)
+        box.setContentsMargins(20, 18, 20, 16)
+        box.setSpacing(9)
+        heading = QHBoxLayout()
+        heading.setSpacing(12)
+        badge = QLabel()
+        badge.setObjectName('iconTile')
+        badge.setFixedSize(42, 42)
         badge.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        step_title = QLabel(title)
-        step_title.setObjectName("stepTitle")
-        header.addWidget(badge)
-        header.addWidget(step_title)
-        header.addStretch()
-        card_layout.addLayout(header)
-
-        body = QLabel(desc)
+        badge.setPixmap(self._icon_pixmap(icon))
+        heading.addWidget(badge)
+        name = QLabel(title)
+        name.setObjectName('cardTitle')
+        heading.addWidget(name)
+        heading.addStretch()
+        box.addLayout(heading)
+        body = QLabel(description)
+        body.setObjectName('cardDescription')
         body.setWordWrap(True)
-        body.setObjectName("stepDesc")
-        card_layout.addWidget(body)
-
-        button_row = QHBoxLayout()
-        button_row.addStretch()
-        btn = QPushButton(button_text)
-        btn.setObjectName("stepButton")
-        btn.setFixedSize(96, 34)
-        btn.clicked.connect(signal)
-        button_row.addWidget(btn)
-        card_layout.addLayout(button_row)
+        box.addWidget(body)
+        box.addStretch(1)
+        row = QHBoxLayout()
+        row.addStretch()
+        button = QPushButton(button_text + '  →')
+        button.setObjectName(key + 'Button')
+        button.setProperty('homeAction', True)
+        button.setProperty('featured', featured)
+        button.setCursor(Qt.CursorShape.PointingHandCursor)
+        button.setMinimumHeight(32)
+        button.setAccessibleName(button_text)
+        button.clicked.connect(signal)
+        row.addWidget(button)
+        box.addLayout(row)
         return card
 
     def apply_styles(self):
-        self.setStyleSheet("""
-            QWidget {
-                background: #f8fafc;
+        self.setStyleSheet('''
+            QWidget#home_page, QWidget#homeSurface, QScrollArea { background: #f5f7fa; }
+            QLabel { background: transparent; border: none; font-family: "Microsoft YaHei UI"; }
+            QLabel#pageTitle { color: #172b36; font-size: 26px; font-weight: 700; }
+            QLabel#sectionTitle { color: #52616e; font-size: 13px; font-weight: 600; }
+            QFrame#actionCard { background: #ffffff; border: 1px solid #e2e8ee; border-radius: 14px; }
+            QFrame#actionCard:hover { border-color: #87c5c0; }
+            QFrame#actionCard[featured="true"] { background: #eff9f7; border-color: #b2dad4; }
+            QLabel#iconTile { background: #e9f5f2; border-radius: 11px; }
+            QLabel#cardTitle { color: #203440; font-size: 17px; font-weight: 600; }
+            QLabel#cardDescription { color: #6b7885; font-size: 12px; }
+            QPushButton[homeAction="true"] {
+                background: transparent; color: #137c76; border: 1px solid #d0e3df;
+                border-radius: 7px; padding: 0 13px; font-family: "Microsoft YaHei UI";
+                font-size: 12px; font-weight: 600;
             }
-            QFrame#hero {
-                background: #ffffff;
-                border: 1px solid #dbe3ee;
-                border-radius: 8px;
+            QPushButton[homeAction="true"]:hover { background: #e9f5f2; border-color: #7fbbb4; }
+            QPushButton[homeAction="true"]:pressed { background: #d8eeea; }
+            QPushButton[homeAction="true"]:focus { border: 2px solid #147d76; }
+            QPushButton[homeAction="true"][featured="true"] {
+                background: #147d76; border-color: #147d76; color: #ffffff;
             }
-            QLabel#heroTitle {
-                font-size: 28px;
-                font-weight: 700;
-                color: #0f766e;
-            }
-            QLabel#heroSubtitle {
-                font-size: 15px;
-                color: #475569;
-                line-height: 1.5;
-            }
-            QLabel#sectionTitle {
-                font-size: 18px;
-                font-weight: 700;
-                color: #111827;
-                padding: 4px 0;
-            }
-            QFrame#stepCard {
-                background: #ffffff;
-                border: 1px solid #e2e8f0;
-                border-radius: 8px;
-            }
-            QFrame#stepCard:hover {
-                border-color: #50C9C3;
-                background: #f8fffe;
-            }
-            QLabel#stepBadge {
-                min-width: 34px;
-                max-width: 34px;
-                min-height: 28px;
-                max-height: 28px;
-                border-radius: 6px;
-                background: #e6fffb;
-                color: #0f766e;
-                font-weight: 700;
-                font-size: 13px;
-            }
-            QLabel#stepTitle {
-                font-size: 16px;
-                font-weight: 700;
-                color: #111827;
-            }
-            QLabel#stepDesc {
-                font-size: 13px;
-                color: #64748b;
-                line-height: 1.5;
-            }
-            QPushButton#secondaryButton,
-            QPushButton#stepButton {
-                background: #ffffff;
-                color: #0f766e;
-                border: 1px solid #50C9C3;
-                border-radius: 6px;
-                font-size: 13px;
-                font-weight: 600;
-            }
-            QPushButton#secondaryButton:hover,
-            QPushButton#stepButton:hover {
-                background: #ecfdf5;
-                border-color: #3BA8A2;
-            }
-        """)
+            QPushButton[homeAction="true"][featured="true"]:hover { background: #106c65; }
+        ''')

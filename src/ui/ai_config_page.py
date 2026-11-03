@@ -15,7 +15,7 @@ from PyQt6.QtWidgets import (
     QFrame, QScrollArea, QDialog, QSpinBox
 )
 from PyQt6.QtCore import Qt, pyqtSignal
-from qfluentwidgets import PrimaryPushButton
+from qfluentwidgets import PrimaryPushButton, InfoBar
 
 from utils import get_config_dir, get_ai_config_path
 from .dialog_icons import dialog_icon
@@ -113,7 +113,7 @@ class AIConfigPage(QWidget):
         title_label.setObjectName("pageTitle")
         title_box.addWidget(title_label)
         
-        subtitle_label = QLabel("配置AI服务接口参数，供AI巡检报告、智能排障和分析功能调用")
+        subtitle_label = QLabel("配置AI服务接口参数，用于巡检报告生成、智能排障和结果分析")
         subtitle_label.setObjectName("pageSubtitle")
         title_box.addWidget(subtitle_label)
         
@@ -741,7 +741,7 @@ class AIConfigPage(QWidget):
             self._load_model_to_form(self.current_model_index)
 
     def _commit_edit_session(self):
-        self._edit_snapshot = [dict(item) for item in self.model_configs]
+        self._edit_snapshot = None
         self._edit_snapshot_index = self.current_model_index
 
     def close_editor(self):
@@ -947,6 +947,7 @@ class AIConfigPage(QWidget):
         if not self._write_config(show_message=True):
             return
         self._commit_edit_session()
+        self._set_editor_visible(False)
 
     def _write_config(self, show_message: bool = True) -> bool:
         """写入配置文件。列表第一项即当前选用模型。"""
@@ -971,7 +972,7 @@ class AIConfigPage(QWidget):
                 json.dump(config, f, ensure_ascii=False, indent=2)
             self._refresh_model_cards(self.current_model_index)
             if show_message:
-                QMessageBox.information(self, "保存成功", "配置已保存到:\n" + config_file)
+                InfoBar.success(title="保存成功", content="大模型配置已保存", parent=self, duration=2000)
             return True
         except Exception as e:
             if show_message:

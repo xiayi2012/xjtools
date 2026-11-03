@@ -77,8 +77,6 @@ class SSHClientWrapper:
                 "banner_timeout": timeout,
                 "auth_timeout": timeout,
                 "channel_timeout": timeout,
-                "gss_auth": False,
-                "gss_kex": False,
                 "disabled_algorithms": None,
                 "compress": True
             }

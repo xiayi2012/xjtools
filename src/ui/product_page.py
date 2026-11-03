@@ -6,10 +6,10 @@
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QGridLayout,
     QLabel, QPushButton, QScrollArea, QFrame,
-    QDialog, QLineEdit, QSpinBox, QCheckBox,
+    QDialog, QLineEdit, QSpinBox, QCheckBox, QMenu, QToolButton, QButtonGroup,
     QComboBox, QMessageBox, QSizePolicy, QFileDialog, QTimeEdit, QTextEdit
 )
-from PyQt6.QtCore import Qt, pyqtSignal, QTime
+from PyQt6.QtCore import Qt, pyqtSignal, QTime, QSize
 from qfluentwidgets import PrimaryPushButton, ToolButton, FluentIcon as FIF
 
 import json
@@ -126,7 +126,7 @@ class AddServerDialog(QDialog):
         self.product_combo = QComboBox()
         self.product_combo.setMinimumHeight(32)
         self.product_combo.setEditable(True)
-        self.product_combo.addItems(["办公智盾", "准入系统", "EDR", "零信任"])
+        self.product_combo.addItems(["准入系统", "EDR", "零信任"])
         product_layout.addWidget(self.product_combo, 1)
         layout.addLayout(product_layout)
         
@@ -798,7 +798,55 @@ class ScheduleInspectionDialog(QDialog):
         self.accept()
 
 
-class ServerListItem(QFrame):
+class DeviceActionsMixin:
+    """Shared device actions for list and grid views."""
+
+    def _create_actions_button(self):
+        button = QToolButton(self)
+        button.setObjectName("deviceActionsButton")
+        button.setIcon(FIF.SETTING.icon())
+        button.setFixedSize(32, 32)
+        button.setToolTip("设备操作")
+        button.setAccessibleName("设备操作")
+        button.setCursor(Qt.CursorShape.PointingHandCursor)
+        button.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
+        button.setStyleSheet("""
+            QToolButton { background: transparent; border: 1px solid transparent; border-radius: 6px; }
+            QToolButton:hover, QToolButton:pressed { background: #e9f5f2; border-color: #b9dbd5; }
+            QToolButton:focus { border-color: #147d76; }
+            QToolButton::menu-indicator { image: none; }
+        """)
+        menu = QMenu(button)
+        menu.setStyleSheet("""
+            QMenu { background: white; color: #243744; border: 1px solid #dce5e9; padding: 5px; }
+            QMenu::item { padding: 9px 24px; font-size: 13px; }
+            QMenu::item:selected { background: #e9f5f2; color: #147d76; }
+            QMenu::item:disabled { color: #a1a8b0; background: transparent; }
+            QMenu::separator { height: 1px; background: #edf0f3; margin: 4px 8px; }
+        """)
+        self.root_action = menu.addAction("切换 root")
+        self.root_action.triggered.connect(self._on_switch_root_clicked)
+        menu.addSeparator()
+        menu.addAction("编辑").triggered.connect(lambda: self.edit_clicked.emit(self.server))
+        menu.addAction("删除").triggered.connect(lambda: self.delete_clicked.emit(self.server))
+        menu.addSeparator()
+        menu.addAction("知识库").triggered.connect(self._on_knowledge_base_clicked)
+        menu.addAction("脚本库").triggered.connect(self._on_script_library_clicked)
+        menu.aboutToShow.connect(self._update_root_action)
+        button.setMenu(menu)
+        self.actions_button = button
+        return button
+
+    def _update_root_action(self):
+        allowed = (self.is_connected and not self.is_root
+                   and self.server.get("username", "").strip().lower() != "root"
+                   and self.server.get("switch_root", True)
+                   and self.server.get("product", "") != "办公智盾")
+        self.root_action.setEnabled(bool(allowed))
+        self.root_action.setToolTip("已是 root 用户" if self.is_connected and self.is_root else "")
+
+
+class ServerListItem(DeviceActionsMixin, QFrame):
     """服务器列表项组件"""
 
     connect_clicked = pyqtSignal(dict)
@@ -825,7 +873,8 @@ class ServerListItem(QFrame):
     
     def _on_switch_root_clicked(self):
         """切换root按钮点击"""
-        self.switch_root_clicked.emit(self.server)
+        if self.root_action.isEnabled():
+            self.switch_root_clicked.emit(self.server)
     
     def _on_script_library_clicked(self):
         """打开脚本库"""
@@ -884,15 +933,9 @@ class ServerListItem(QFrame):
     
     def set_connected(self, connected: bool, is_root: bool = False):
         """设置连接状态"""
-        self.is_connected = connected
-        self.is_root = is_root
-        
-        # 判断是否显示切换root按钮（非root用户、已连接、支持切换root、非OTP产品）
-        product = self.server.get("product", "")
-        can_switch_root = (connected and 
-                          not is_root and 
-                          self.server.get("switch_root", True) and 
-                          product != "办公智盾")
+        self.is_connected = bool(connected)
+        self.is_root = bool(connected and (is_root or self.server.get("username", "").strip().lower() == "root"))
+        self._update_root_action()
         
         if connected:
             # 已连接：连接按钮显示"已连接"（灰色不可点击），断开按钮可见可点击
@@ -922,8 +965,6 @@ class ServerListItem(QFrame):
                     background: #fee2e2;
                 }
             """)
-            # 切换root按钮
-            self.switch_root_btn.setVisible(can_switch_root)
             self.setStyleSheet("""
                 QFrame#serverListItem {
                     background: #f0fdf4;
@@ -949,7 +990,6 @@ class ServerListItem(QFrame):
                 }
             """)
             self.disconnect_btn.setVisible(False)
-            self.switch_root_btn.setVisible(False)
             self.setStyleSheet("""
                 QFrame#serverListItem {
                     background: white;
@@ -1051,88 +1091,10 @@ class ServerListItem(QFrame):
         self.disconnect_btn.clicked.connect(self._on_disconnect_clicked)
         layout.addWidget(self.disconnect_btn)
         
-        # 切换root按钮（仅非root用户、已连接时可见）
-        self.switch_root_btn = QPushButton("切换root")
-        self.switch_root_btn.setObjectName("switchRootBtn")
-        self.switch_root_btn.setFixedWidth(70)
-        self.switch_root_btn.setFixedHeight(26)
-        self.switch_root_btn.setVisible(False)
-        self.switch_root_btn.setStyleSheet("""
-            QPushButton#switchRootBtn {
-                background: #d97706;
-                color: white;
-                border: none;
-                border-radius: 4px;
-                font-size: 11px;
-                font-weight: bold;
-            }
-            QPushButton#switchRootBtn:hover {
-                background: #b45309;
-            }
-        """)
-        self.switch_root_btn.clicked.connect(self._on_switch_root_clicked)
-        layout.addWidget(self.switch_root_btn)
-        
-        # 编辑按钮
-        edit_btn = QPushButton("编辑")
-        edit_btn.setObjectName("editBtn")
-        edit_btn.setFixedWidth(50)
-        edit_btn.setFixedHeight(26)
-        edit_btn.clicked.connect(lambda: self.edit_clicked.emit(self.server))
-        layout.addWidget(edit_btn)
-        
-        # 删除按钮
-        delete_btn = QPushButton("删除")
-        delete_btn.setObjectName("deleteBtn")
-        delete_btn.setFixedWidth(50)
-        delete_btn.setFixedHeight(26)
-        delete_btn.clicked.connect(lambda: self.delete_clicked.emit(self.server))
-        layout.addWidget(delete_btn)
-        
-        # 知识库按钮
-        kb_btn = QPushButton("知识库")
-        kb_btn.setObjectName("kbBtn")
-        kb_btn.setFixedWidth(60)
-        kb_btn.setFixedHeight(26)
-        kb_btn.setStyleSheet("""
-            QPushButton#kbBtn {
-                background: #50C9C3;
-                color: white;
-                border: none;
-                border-radius: 4px;
-                font-size: 11px;
-                font-weight: bold;
-            }
-            QPushButton#kbBtn:hover {
-                background: #3eb8b3;
-            }
-        """)
-        kb_btn.clicked.connect(self._on_knowledge_base_clicked)
-        layout.addWidget(kb_btn)
-        
-        # 脚本库按钮
-        script_btn = QPushButton("脚本库")
-        script_btn.setObjectName("scriptBtn")
-        script_btn.setFixedWidth(60)
-        script_btn.setFixedHeight(26)
-        script_btn.setStyleSheet("""
-            QPushButton#scriptBtn {
-                background: #50C9C3;
-                color: white;
-                border: none;
-                border-radius: 4px;
-                font-size: 11px;
-                font-weight: bold;
-            }
-            QPushButton#scriptBtn:hover {
-                background: #3eb8b3;
-            }
-        """)
-        script_btn.clicked.connect(self._on_script_library_clicked)
-        layout.addWidget(script_btn)
+        layout.addWidget(self._create_actions_button())
 
 
-class ServerGridItem(QFrame):
+class ServerGridItem(DeviceActionsMixin, QFrame):
     """服务器网格项组件"""
     
     connect_clicked = pyqtSignal(dict)
@@ -1159,7 +1121,8 @@ class ServerGridItem(QFrame):
     
     def _on_switch_root_clicked(self):
         """切换root按钮点击"""
-        self.switch_root_clicked.emit(self.server)
+        if self.root_action.isEnabled():
+            self.switch_root_clicked.emit(self.server)
     
     def _on_script_library_clicked(self):
         """打开脚本库"""
@@ -1209,8 +1172,9 @@ class ServerGridItem(QFrame):
     
     def set_connected(self, connected: bool, is_root: bool = False):
         """设置连接状态"""
-        self.is_connected = connected
-        self.is_root = is_root
+        self.is_connected = bool(connected)
+        self.is_root = bool(connected and (is_root or self.server.get("username", "").strip().lower() == "root"))
+        self._update_root_action()
         
         if connected:
             # 已连接：连接按钮显示"已连接"（灰色不可点击）
@@ -1289,26 +1253,8 @@ class ServerGridItem(QFrame):
         
         header_layout.addStretch()
         
-        # 菜单按钮（...）
-        menu_btn = QPushButton("...")
-        menu_btn.setObjectName("menuBtn")
-        menu_btn.setFixedSize(28, 22)
-        menu_btn.setStyleSheet("""
-            QPushButton#menuBtn {
-                background: #f3f4f6;
-                color: #374151;
-                border: 1px solid #d1d5db;
-                border-radius: 4px;
-                font-size: 12px;
-                font-weight: bold;
-            }
-            QPushButton#menuBtn:hover {
-                background: #e5e7eb;
-            }
-        """)
-        menu_btn.clicked.connect(self.show_grid_menu)
-        header_layout.addWidget(menu_btn)
-        
+        header_layout.addWidget(self._create_actions_button())
+
         layout.addLayout(header_layout)
 
         # 服务器名称/主机
@@ -1378,46 +1324,6 @@ class ServerGridItem(QFrame):
         
         layout.addLayout(btn_layout)
     
-    def show_grid_menu(self):
-        """显示网格视图菜单"""
-        from PyQt6.QtWidgets import QMenu
-        
-        menu = QMenu(self)
-        menu.setStyleSheet("""
-            QMenu {
-                background: white;
-                border: 1px solid #e5e7eb;
-                border-radius: 8px;
-                padding: 5px;
-            }
-            QMenu::item {
-                padding: 8px 20px;
-                font-size: 13px;
-            }
-            QMenu::item:selected {
-                background: #f3f4f6;
-            }
-        """)
-        
-        # 编辑
-        edit_action = menu.addAction("编辑")
-        edit_action.triggered.connect(lambda: self.edit_clicked.emit(self.server))
-        
-        # 删除
-        delete_action = menu.addAction("删除")
-        delete_action.triggered.connect(lambda: self.delete_clicked.emit(self.server))
-        
-        menu.addSeparator()
-        
-        # 知识库
-        kb_action = menu.addAction("知识库")
-        kb_action.triggered.connect(self._on_knowledge_base_clicked)
-        
-        # 脚本库
-        script_action = menu.addAction("脚本库")
-        script_action.triggered.connect(self._on_script_library_clicked)
-        
-        menu.exec(self.mapToGlobal(self.rect().topRight()))
 
 
 class ProductSection(QWidget):
@@ -1560,8 +1466,8 @@ class ProductSection(QWidget):
                 server = item.server
             else:
                 continue
-            is_connected = connected_server_id and connected_server_id == server.get("id")
-            item.set_connected(is_connected, is_root)
+            is_connected = bool(connected_server_id and connected_server_id == server.get("id"))
+            item.set_connected(is_connected, is_root and is_connected)
 
 
 class ProductPage(QWidget):
@@ -1579,6 +1485,7 @@ class ProductPage(QWidget):
         super().__init__()
         self.servers = []
         self.connected_server_id = None
+        self.is_root = False
         self.is_grid_view = False
         self.product_sections = []
         self.init_ui()
@@ -1594,21 +1501,41 @@ class ProductPage(QWidget):
         title_layout = QHBoxLayout()
         title_layout.setSpacing(20)
 
-        self.title_label = QLabel("配置管理")
+        self.title_label = QLabel("设备管理")
         self.title_label.setObjectName("pageTitle")
         self.title_label.setStyleSheet("font-size: 18px; font-weight: bold; color: #50C9C3; padding: 5px;")
         title_layout.addWidget(self.title_label)
 
         title_layout.addStretch()
         
-        # 视图切换按钮
-        self.view_toggle_btn = QPushButton("列表视图")
-        self.view_toggle_btn.setObjectName("viewToggleBtn")
-        self.view_toggle_btn.setMinimumHeight(36)
-        self.view_toggle_btn.setMinimumWidth(100)
-        self.view_toggle_btn.clicked.connect(self.toggle_view)
-        self.view_toggle_btn.setToolTip("切换到方块视图")
-        title_layout.addWidget(self.view_toggle_btn)
+        # 左右分段图标选择器：明确展示当前视图。
+        self.view_switcher = QFrame()
+        self.view_switcher.setObjectName("viewSwitcher")
+        switcher_layout = QHBoxLayout(self.view_switcher)
+        switcher_layout.setContentsMargins(3, 3, 3, 3)
+        switcher_layout.setSpacing(2)
+        self.view_button_group = QButtonGroup(self)
+        self.view_button_group.setExclusive(True)
+        for is_grid, name, label, icon in [
+            (False, 'listViewButton', '列表视图', FIF.MENU),
+            (True, 'gridViewButton', '方块视图', FIF.TILES),
+        ]:
+            button = QToolButton()
+            button.setObjectName(name)
+            button.setProperty('viewChoice', True)
+            button.setIcon(icon.icon())
+            button.setIconSize(QSize(18, 18))
+            button.setFixedSize(36, 28)
+            button.setCheckable(True)
+            button.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+            button.setChecked(self.is_grid_view == is_grid)
+            button.setToolTip(label)
+            button.setAccessibleName(label)
+            button.setCursor(Qt.CursorShape.PointingHandCursor)
+            button.clicked.connect(lambda checked, grid=is_grid: self.set_view_mode(grid))
+            self.view_button_group.addButton(button, int(is_grid))
+            switcher_layout.addWidget(button)
+        title_layout.addWidget(self.view_switcher)
         
         # 添加服务器按钮
         self.schedule_btn = QPushButton("定时巡检")
@@ -1677,15 +1604,14 @@ class ProductPage(QWidget):
 
     def toggle_view(self):
         """切换视图模式"""
-        self.is_grid_view = not self.is_grid_view
-        
-        if self.is_grid_view:
-            self.view_toggle_btn.setText("方块视图")
-            self.view_toggle_btn.setToolTip("切换到列表视图")
-        else:
-            self.view_toggle_btn.setText("列表视图")
-            self.view_toggle_btn.setToolTip("切换到方块视图")
-        
+        self.set_view_mode(not self.is_grid_view)
+
+    def set_view_mode(self, is_grid: bool):
+        """选择视图；重复点击当前选项不会重建列表。"""
+        if self.is_grid_view == is_grid:
+            return
+        self.is_grid_view = is_grid
+        self.view_button_group.button(int(is_grid)).setChecked(True)
         self.update_server_list()
 
     def load_servers(self):
@@ -1744,7 +1670,7 @@ class ProductPage(QWidget):
         for product_name, servers in products.items():
             section = ProductSection(product_name, servers, self)
             section.update_view(self.is_grid_view)
-            section.update_connected_status(self.connected_server_id)
+            section.update_connected_status(self.connected_server_id, self.is_root)
             # 连接信号
             section.item_connect.connect(self.on_server_connect)
             section.item_edit.connect(self.on_edit_server)
@@ -1872,18 +1798,22 @@ class ProductPage(QWidget):
             }
             
             /* 视图切换按钮 */
-            QPushButton#viewToggleBtn {
-                background: #50C9C3;
-                color: white;
-                border: none;
-                border-radius: 6px;
-                font-size: 13px;
-                font-weight: bold;
-                padding: 0 16px;
+            QFrame#viewSwitcher {
+                background: #eef2f4;
+                border: 1px solid #dce5e9;
+                border-radius: 8px;
             }
-            QPushButton#viewToggleBtn:hover {
-                background: #3eb8b3;
+            QToolButton[viewChoice="true"] {
+                background: transparent;
+                border: 1px solid transparent;
+                border-radius: 5px;
             }
+            QToolButton[viewChoice="true"]:hover { background: #e0ebe8; }
+            QToolButton[viewChoice="true"]:checked {
+                background: #d6eee8;
+                border-color: #79b9ae;
+            }
+            QToolButton[viewChoice="true"]:focus { border-color: #147d76; }
             
             /* 按钮样式 */
             QPushButton#addServerBtn {

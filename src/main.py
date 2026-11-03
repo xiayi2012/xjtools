@@ -27,7 +27,7 @@ __hidden_credit__ = "by xiayi"
 def main():
     """主函数"""
     app = QApplication(sys.argv)
-    app.setApplicationName("AI 智能运维助手")
+    app.setApplicationName("AI智能Linux运维系统")
     app.setApplicationVersion("3.3.0")
     app.setWindowIcon(QIcon(os.path.join(os.path.dirname(__file__), "..", "icons", "xunjian2.svg")))
 

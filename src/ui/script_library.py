@@ -22,7 +22,7 @@ from .dialog_icons import dialog_icon
 
 
 # 产品列表
-PRODUCTS = ["办公智盾", "准入系统", "EDR", "零信任"]
+PRODUCTS = ["准入系统", "EDR", "零信任"]
 
 
 class ScriptLibraryDialog(QDialog):

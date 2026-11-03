@@ -1,7 +1,6 @@
 """
 主窗口模块
 基于 PyQt6 + qfluentwidgets 实现GUI 主窗口
-删除连接管理页面，直接在首页连接服务器
 """
 
 import os
@@ -34,6 +33,7 @@ from .system_guard_page import SystemGuardPage
 from .connection_page import ConnectionWorker
 from src.core.ssh_connector import SSHClientWrapper
 from src.scripts.loader import get_loader
+from scripts.inspection_catalog import get_builtin_checks, format_check_output, classify_output
 
 from pathlib import Path
 import base64
@@ -144,16 +144,16 @@ class ScheduledInspectionWorker(QThread):
                 self._log(f"执行巡检项: {name}")
                 output_parts = []
                 try:
-                    for line in ssh.execute_stream(command):
+                    for line in ssh.execute_stream(command, timeout=script.get("timeout", 300)):
                         if line:
                             output_parts.append(line)
                 except Exception as exc:
                     self._log(f"巡检项异常: {name}: {exc}")
                     output_parts.append(f"\n执行异常: {exc}\n")
                 if script.get("_type") == "custom":
-                    custom_outputs[name] = "".join(output_parts)
+                    custom_outputs[name] = format_check_output(script, "".join(output_parts))
                 else:
-                    builtin_outputs[name] = "".join(output_parts)
+                    builtin_outputs[name] = format_check_output(script, "".join(output_parts))
 
             html = self._build_ai_inspection_report_html(builtin_outputs, custom_outputs, product_name)
             report_path = self._write_report(html, product_name)
@@ -199,47 +199,8 @@ class ScheduledInspectionWorker(QThread):
         return scripts
 
     def _load_ai_inspection_builtin_items(self) -> list:
-        """Load the same built-in inspection items defined by InspectionPage."""
-        import ast
-        import inspect
-        import textwrap
-
-        try:
-            source = textwrap.dedent(inspect.getsource(InspectionPage._populate_inspect_list))
-            tree = ast.parse(source)
-            for node in ast.walk(tree):
-                if isinstance(node, ast.Assign):
-                    for target in node.targets:
-                        if (
-                            isinstance(target, ast.Attribute)
-                            and target.attr == "_all_items"
-                            and isinstance(target.value, ast.Name)
-                            and target.value.id == "self"
-                        ):
-                            items = ast.literal_eval(node.value)
-                            return [
-                                {
-                                    "Name": item.get("Name", item.get("name", "未知巡检项")),
-                                    "command": item.get("command", ""),
-                                    "category": item.get("category", ""),
-                                    "_type": "builtin",
-                                }
-                                for item in items
-                                if item.get("checked", True)
-                            ]
-        except Exception as exc:
-            self._log(f"读取AI巡检页面巡检项失败，使用脚本加载器兜底: {exc}")
-
-        loader = get_loader()
-        fallback = []
-        for item in loader.get_checks_as_list(""):
-            fallback.append({
-                "Name": item.get("name", "未知巡检项"),
-                "command": item.get("command", ""),
-                "category": item.get("category", ""),
-                "_type": "builtin",
-            })
-        return fallback
+        """Use the same definitions and defaults as the interactive page."""
+        return [dict(item, _type='builtin') for item in get_builtin_checks() if item['checked']]
 
     def _build_ai_inspection_report_html(self, builtin_outputs: dict, custom_outputs: dict, product_name: str) -> str:
         """Use the same HTML template as the AI inspection export page."""
@@ -361,38 +322,7 @@ class ScheduledInspectionWorker(QThread):
 
     @staticmethod
     def _detect_item_status(output: str) -> str:
-        text = str(output or "")
-        status_lines = [
-            line.strip()
-            for line in text.splitlines()
-            if re.search(r'^(状态|结论|结果|检测结果)\s*[:：]', line.strip())
-        ]
-        status_text = "\n".join(status_lines)
-        normal_tokens = ["✅", "正常", "success", "ok"]
-        error_tokens = ["🔴", "异常", "高风险", "错误:", "失败:", "故障", "critical", "error:", "failed"]
-        warning_tokens = ["⚠️", "警告", "中风险", "注意", "风险", "warning:", "warn:"]
-
-        if status_text:
-            lowered = status_text.lower()
-            has_normal = any(token.lower() in lowered for token in normal_tokens)
-            if any(token.lower() in lowered for token in error_tokens) and not has_normal:
-                return "error"
-            if any(token.lower() in lowered for token in warning_tokens) and not has_normal:
-                return "warning"
-            return "normal"
-
-        # 没有明确状态行时，只把命令本身执行失败视为异常，避免扫描日志内容造成误报。
-        execution_error_patterns = [
-            r'执行异常\s*[:：]',
-            r'执行错误\s*[:：]',
-            r'ssh.*失败',
-            r'command not found',
-            r'permission denied',
-            r'no such file or directory',
-        ]
-        if any(re.search(pattern, text, re.IGNORECASE) for pattern in execution_error_patterns):
-            return "error"
-        return "normal"
+        return classify_output(output)
 
     @staticmethod
     def _build_scheduled_ai_fragment(issue_items: list, warning_items: list, normal_items: list, timestamp: str) -> str:
@@ -459,6 +389,7 @@ class MainWindow(FluentWindow):
         super().__init__()
         self.current_page_index = 0
         self.is_connected = False
+        self.is_root = False
         self.connection_info = {}
         self.selected_product_name = ""  # 存储选择的产品名称
         self.selected_product_id = ""
@@ -473,7 +404,7 @@ class MainWindow(FluentWindow):
     
     def init_ui(self):
         """初始化 UI"""
-        self.setWindowTitle("AI 智能运维")
+        self.setWindowTitle("AI智能Linux运维系统")
         self.setMinimumSize(1200, 800)
         
         # 创建各个页面
@@ -496,9 +427,9 @@ class MainWindow(FluentWindow):
         
         # 添加子界面到导航
         self.addSubInterface(self.home_page, FIF.HOME, "首页")
-        self.addSubInterface(self.product_page, FIF.IOT, "配置管理")
+        self.addSubInterface(self.product_page, FIF.IOT, "设备管理")
+        self.addSubInterface(self.inspection_page, FIF.PLAY, "一键巡检")
         self.addSubInterface(self.ai_troubleshoot_page, FIF.CHAT, "AI 排障")
-        self.addSubInterface(self.inspection_page, FIF.PLAY, "AI 巡检")
         self.addSubInterface(self.system_guard_page, FIF.CALENDAR, "定时巡检")
         self.addSubInterface(self.log_extract_page, FIF.DOCUMENT, "日志收集")
         self.addSubInterface(self.ai_config_page, FIF.SETTING, "大模型配置")
@@ -513,9 +444,9 @@ class MainWindow(FluentWindow):
         self.home_page.start_clicked.connect(lambda: self.switch_page(1, force=True))
         self.home_page.ai_config_clicked.connect(lambda: self.switch_page(6, force=True))
         self.home_page.server_config_clicked.connect(lambda: self.switch_page(1, force=True))
-        self.home_page.inspection_clicked.connect(lambda: self.switch_page(3))
+        self.home_page.inspection_clicked.connect(lambda: self.switch_page(2))
         self.home_page.system_guard_clicked.connect(lambda: self.switch_page(4, force=True))
-        self.home_page.troubleshoot_clicked.connect(lambda: self.switch_page(2))
+        self.home_page.troubleshoot_clicked.connect(lambda: self.switch_page(3))
         self.product_page.server_immediate_connect.connect(self.on_server_immediate_connect)
         self.product_page.server_disconnect_request.connect(self.on_server_disconnect_request)
         self.product_page.server_switch_root_request.connect(self.on_server_switch_root_request)
@@ -544,7 +475,7 @@ class MainWindow(FluentWindow):
             icon_path = Path(__file__).resolve().parents[2] / "icons" / "app.ico"
         icon = QIcon(str(icon_path)) if icon_path.exists() else self.windowIcon()
         self.tray_icon = QSystemTrayIcon(icon, self)
-        self.tray_icon.setToolTip("AI智能运维")
+        self.tray_icon.setToolTip("AI智能Linux运维系统")
 
         tray_menu = QMenu(self)
         show_action = QAction("显示主窗口", self)
@@ -756,6 +687,7 @@ class MainWindow(FluentWindow):
         """初始化导航设置"""
         # 设置导航栏宽度（窄一点）
         self.navigationInterface.setExpandWidth(180)
+        self.navigationInterface.expand(useAni=False)
         
         # 设置标题栏字体大小
         self.titleBar.titleLabel.setStyleSheet("font-size: 18px; font-weight: bold;")
@@ -809,12 +741,12 @@ class MainWindow(FluentWindow):
     
     def _on_page_changed(self, index: int):
         """页面切换拦截 - 未连接时阻止访问受限页面"""
-        # 页面索引: 0=首页, 1=配置管理, 2=AI排障, 3=AI巡检, 4=定时巡检, 5=日志收集, 6=大模型配置
-        # 首页、配置管理、定时巡检、大模型配置不需要连接，AI排障/AI巡检/日志收集需要连接
+        # 页面索引: 0=首页, 1=设备管理, 2=一键巡检, 3=AI排障, 4=定时巡检, 5=日志收集, 6=大模型配置
+        # 首页、设备管理、定时巡检、大模型配置不需要连接，AI排障/AI巡检/日志收集需要连接
         if not self.is_connected and index in (2, 3, 5):
             from qfluentwidgets import MessageBox
             MessageBox("提示", "请先连接服务器", self).exec()
-            # 切换回配置管理页
+            # 切换回设备管理页
             self.stackedWidget.setCurrentIndex(1)
             self.navigationInterface.setCurrentItem(self.product_page.objectName())
     
@@ -823,8 +755,8 @@ class MainWindow(FluentWindow):
         page_names = [
             self.home_page,
             self.product_page,
-            self.ai_troubleshoot_page,
             self.inspection_page,
+            self.ai_troubleshoot_page,
             self.system_guard_page,
             self.log_extract_page,
             self.ai_config_page
@@ -898,7 +830,9 @@ class MainWindow(FluentWindow):
             # 更新产品页面的连接状态
             # 优先使用pending_server中的id，因为connection_info中没有id字段
             server_id = self.pending_server.get("id") if self.pending_server else connection_info.get("id")
-            self.product_page.set_connected_server(server_id)
+            username = connection_info.get('username') or (self.pending_server or {}).get('username', '')
+            self.is_root = username.strip().lower() == 'root'
+            self.product_page.set_connected_server(server_id, is_root=self.is_root)
             
             # 更新按钮状态
             self.connection_btn.setEnabled(True)
@@ -940,7 +874,7 @@ class MainWindow(FluentWindow):
             self.ai_troubleshoot_page.set_product(product_name)
             
             # 检查是否需要切换root
-            if self.pending_server and self.pending_server.get("switch_root", True):
+            if self.pending_server and self.pending_server.get("switch_root", True) and not self.is_root:
                 self.after_connect_switch_root()
         else:
             QMessageBox.warning(self, "连接失败", message)
@@ -965,8 +899,8 @@ class MainWindow(FluentWindow):
                         # 更新连接信息的用户名为root
                         if self.connection_info:
                             self.connection_info['username'] = 'root'
-                        # 更新UI - 隐藏切换root按钮
-                        self.product_page.set_connected_server(self.connected_server_id, is_root=True)
+                        # 保持当前设备的 root 状态，菜单项置灰而非隐藏。
+                        self.product_page.set_connected_server(self.product_page.connected_server_id, is_root=True)
                     else:
                         QMessageBox.warning(self, "切换失败", "无法切换到root用户，请检查密码")
                 except Exception as e:
@@ -978,7 +912,8 @@ class MainWindow(FluentWindow):
     
     def on_server_switch_root_request(self, server: dict):
         """处理切换root请求（从列表按钮触发）"""
-        # 直接调用切换root逻辑
+        if self.product_page.is_root:
+            return
         self.after_connect_switch_root()
     
     def disconnect_and_go_home(self):
@@ -990,6 +925,7 @@ class MainWindow(FluentWindow):
                 pass
         
         self.is_connected = False
+        self.is_root = False
         self.connection_info = {}
         self.ssh_client = None
         self.pending_server = None
@@ -1031,7 +967,7 @@ class MainWindow(FluentWindow):
     
     def on_go_to_next_step(self):
         """处理首页下一步按钮点击"""
-        self.switch_page(3)  # AI巡检在索引3
+        self.switch_page(2)  # 一键巡检在索引2
     
     def on_inspection_items_confirmed(self, inspection_config: dict):
         """巡检项确认处理"""
@@ -1046,7 +982,7 @@ class MainWindow(FluentWindow):
         self.inspection_page.set_product(self.selected_product_name)
         self.log_extract_page.set_product(self.selected_product_name)
         self.inspection_page.set_inspection_config(scripts, custom_scripts, product_scripts)
-        self.switch_page(3)  # AI巡检在索引3
+        self.switch_page(2)  # 一键巡检在索引2
     
     def setCustomBackgroundColor(self, light, dark):
         """设置自定义背景色"""

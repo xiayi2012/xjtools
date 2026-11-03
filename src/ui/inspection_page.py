@@ -14,6 +14,7 @@ from PyQt6.QtWidgets import (
 from PyQt6.QtCore import Qt, pyqtSignal, QThread, QTimer, QSize
 from PyQt6.QtGui import QFont, QColor, QTextCharFormat, QBrush, QMovie, QIcon
 from qfluentwidgets import MessageBox
+from scripts.inspection_catalog import get_builtin_checks, format_check_output, classify_output, STATUS_LABELS
 import sys
 import socket
 import json
@@ -76,7 +77,7 @@ class InspectionWorker(QThread):
                 error_msg = ""
                 line_count = 0
                 try:
-                    for line in self.ssh_client.execute_stream(command):
+                    for line in self.ssh_client.execute_stream(command, timeout=script.get("timeout", 300)):
                         if line and (
                             "连接已断开" in line
                             or "未连接到服务器" in line
@@ -113,13 +114,20 @@ class InspectionWorker(QThread):
                     error_msg = str(e)
                     print(f"[DEBUG] Script {script_name} error: {error_msg}")
                     self.script_output.emit(script_name, f"\n❌ 执行错误: {error_msg}\n")
+                    failed_output = ''.join(output_lines) + f"\n执行错误: {error_msg}\n"
+                    target = custom_output if script_type == 'custom' else builtin_output
+                    target[script_name] = format_check_output(script, failed_output)
+                    self.script_output.emit(script_name, target[script_name])
                     self.script_completed.emit(script_name, False, error_msg)
                     continue
                 
                 if not self.is_running:
                     break
                 
-                output_text = ''.join(output_lines)
+                raw_output = ''.join(output_lines)
+                output_text = format_check_output(script, raw_output)
+                if output_text != raw_output.strip():
+                    self.script_output.emit(script_name, output_text[len(raw_output.strip()):])
                 
                 # 根据类型分别存储
                 if script_type == 'custom':
@@ -893,7 +901,7 @@ class InspectionPage(QWidget):
         layout.setSpacing(15)
         
         # 标题
-        title_label = QLabel("AI 巡检")
+        title_label = QLabel("一键巡检")
         title_label.setObjectName("pageTitle")
         title_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         layout.addWidget(title_label)
@@ -1070,48 +1078,12 @@ class InspectionPage(QWidget):
     
     def _populate_inspect_list(self):
         """填充巡检项列表（从选择巡检项页面合并）"""
-        self._all_items = [
-            # 基础系统检查 - 第一梯队（主机信息）
-            {"Name": "主机名", "command": "hostname", "checked": True, "category": "基础系统"},
-            {"Name": "系统版本", "command": "cat /etc/os-release | grep PRETTY_NAME | cut -d'\"' -f2", "checked": True, "category": "基础系统"},
-            {"Name": "系统时间检查", "command": "remote_s=$(date +%s); remote_t=$(date '+%Y-%m-%d %H:%M:%S %Z'); utc_s=$(date -u +%s); utc_t=$(date -u '+%Y-%m-%d %H:%M:%S UTC'); diff=$((remote_s - utc_s)); diff_abs=$diff; if [ $diff -lt 0 ]; then diff_abs=$((-$diff)); fi; echo \"系统时间: $remote_t\"; echo \"标准时间: $utc_t\"; echo \"时差: ${diff_abs}秒\"; if [ $diff_abs -gt 180 ]; then echo \"状态: ⚠️ 超过3分钟\"; else echo \"状态: ✅ 正常\"; fi", "checked": True, "category": "基础系统"},
-            # CPU相关
-            {"Name": "CPU负载检查(≥80%中风险,≥100%异常)", "command": "load=$(awk '{print $1}' /proc/loadavg); cores=$(nproc); pct=$(awk \"BEGIN {printf \\\"%.1f\\\", $load/$cores*100}\"); echo \"CPU 1分钟负载: $load ($pct% @ ${cores}核)\"; if [ ${load%.*} -ge 100 ]; then echo \"状态: 🔴 异常:负载≥100%\"; elif [ ${load%.*} -ge 80 ]; then echo \"状态: ⚠️ 中风险:负载≥80%\"; else echo \"状态: ✅ 正常\"; fi", "checked": True, "category": "基础系统"},
-            {"Name": "每颗CPU使用率", "command": "top -bn1", "checked": True, "category": "基础系统"},
-            {"Name": "CPU使用率TOP10进程", "command": "ps aux --sort=-%cpu | head -11", "checked": True, "category": "基础系统"},
-            # 内存相关
-            {"Name": "内存使用情况(≥70%有风险,≥90%严重)", "command": "free -m | awk '/^Mem:/{total=$2;used=$3;pct=used/total*100;printf \"总内存: %dMB\\n已使用: %dMB (%.1f%%)\\n\",total,used,pct;if(pct>=90)print \"状态: 🔴 超过90%严重\";else if(pct>=70)print \"状态: ⚠️ 超过70%有风险\";else print \"状态: ✅ 正常\"}'", "checked": True, "category": "基础系统"},
-            {"Name": "进程内存使用率", "command": "ps aux --sort=-%mem | head -20", "checked": True, "category": "基础系统"},
-            {"Name": "交换分区使用情况", "command": "free -h", "checked": True, "category": "基础系统"},
-            # 其他基础系统
-            {"Name": "系统运行时间", "command": "uptime", "checked": True, "category": "基础系统"},
-            {"Name": "磁盘使用率检查", "command": "df -h", "checked": True, "category": "基础系统"},
-            {"Name": "未挂载磁盘检查", "command": "lsblk -o NAME,SIZE,TYPE,MOUNTPOINT", "checked": True, "category": "基础系统"},
-            {"Name": "进程运行时间检查", "command": "ps -eo pid,etime,time,args --sort=etime | head -20", "checked": True, "category": "基础系统"},
-            {"Name": "进程总数统计", "command": "ps aux | wc -l", "checked": True, "category": "基础系统"},
-            {"Name": "登录用户信息", "command": "who", "checked": True, "category": "基础系统"},
-            {"Name": "登录记录", "command": "last | head -20", "checked": True, "category": "基础系统"},
-            # 网络检查
-            {"Name": "网络接口信息", "command": "ip addr show", "checked": True, "category": "网络"},
-            {"Name": "网卡状态检查", "command": "ip link show", "checked": True, "category": "网络"},
-            {"Name": "网卡吞吐量检查", "command": "cat /proc/net/dev", "checked": True, "category": "网络"},
-            {"Name": "端口监听检查", "command": "ss -tuln", "checked": True, "category": "网络"},
-            {"Name": "DNS 解析检查", "command": "cat /etc/resolv.conf", "checked": True, "category": "网络"},
-            {"Name": "网络延迟测试", "command": "ping -c 3 223.5.5.5", "checked": True, "category": "网络"},
-            {"Name": "路由检查", "command": "ip route show", "checked": True, "category": "网络"},
-            {"Name": "连接数检查", "command": "ss -s", "checked": True, "category": "网络"},
-            # 安全检查
-            {"Name": "系统用户列表", "command": "cat /etc/passwd | cut -d: -f1", "checked": True, "category": "安全"},
-            # Docker 检查
-            {"Name": "Docker容器状态", "command": "docker ps -a", "checked": True, "category": "Docker"},
-            {"Name": "Docker容器运行时间检查", "command": "docker ps -a", "checked": True, "category": "Docker"},
-            {"Name": "Docker镜像列表", "command": "docker images", "checked": True, "category": "Docker"},
-            {"Name": "SSL证书有效期检查", "command": "ls -la /etc/ssl/certs/*.pem /etc/pki/tls/certs/*.crt 2>/dev/null | head -20", "checked": True, "category": "Docker"},
-        ]
-        
+        self._all_items = get_builtin_checks()
+
         for item_data in self._all_items:
             item = QListWidgetItem(f"{item_data['Name']} [{item_data['category']}]")
             item.setData(Qt.ItemDataRole.UserRole, item_data)
+            item.setToolTip(item_data.get("description", ""))
             item.setFlags(item.flags() | Qt.ItemFlag.ItemIsUserCheckable | Qt.ItemFlag.ItemIsDragEnabled)
             item.setCheckState(Qt.CheckState.Checked if item_data['checked'] else Qt.CheckState.Unchecked)
             item.setForeground(QBrush(QColor("#333333")))
@@ -1252,6 +1224,7 @@ class InspectionPage(QWidget):
         for item_data in self._all_items:
             item = QListWidgetItem(f"{item_data['Name']} [{item_data['category']}]")
             item.setData(Qt.ItemDataRole.UserRole, item_data)
+            item.setToolTip(item_data.get("description", ""))
             item.setFlags(item.flags() | Qt.ItemFlag.ItemIsUserCheckable | Qt.ItemFlag.ItemIsDragEnabled)
             item.setCheckState(Qt.CheckState.Checked if item_data['checked'] else Qt.CheckState.Unchecked)
             item.setForeground(QBrush(QColor("#333333")))
@@ -1316,6 +1289,7 @@ class InspectionPage(QWidget):
                 item_data['_type'] = s['_type']
             item = QListWidgetItem(f"{name} [{item_data['category']}]")
             item.setData(Qt.ItemDataRole.UserRole, item_data)
+            item.setToolTip(item_data.get("description", ""))
             item.setFlags(item.flags() | Qt.ItemFlag.ItemIsUserCheckable | Qt.ItemFlag.ItemIsDragEnabled)
             item.setCheckState(Qt.CheckState.Checked)
             item.setForeground(QBrush(QColor("#333333")))
@@ -1336,6 +1310,7 @@ class InspectionPage(QWidget):
                 item_data['_type'] = s['_type']
             item = QListWidgetItem(f"{name} [产品脚本]")
             item.setData(Qt.ItemDataRole.UserRole, item_data)
+            item.setToolTip(item_data.get("description", ""))
             item.setFlags(item.flags() | Qt.ItemFlag.ItemIsUserCheckable | Qt.ItemFlag.ItemIsDragEnabled)
             item.setCheckState(Qt.CheckState.Checked)
             item.setForeground(QBrush(QColor("#50C9C3")))
@@ -1357,6 +1332,7 @@ class InspectionPage(QWidget):
                 item_data['_type'] = s['_type']
             item = QListWidgetItem(f"{name} [自定义]")
             item.setData(Qt.ItemDataRole.UserRole, item_data)
+            item.setToolTip(item_data.get("description", ""))
             item.setFlags(item.flags() | Qt.ItemFlag.ItemIsUserCheckable | Qt.ItemFlag.ItemIsDragEnabled)
             item.setCheckState(Qt.CheckState.Checked)
             item.setForeground(QBrush(QColor("#9333ea")))
@@ -1366,109 +1342,9 @@ class InspectionPage(QWidget):
         self._rebuild_output_checklist()
     
     def _analyze_output(self, name: str, output: str) -> str:
-        """分析巡检项输出，生成结论"""
-        output = output.strip()
-        if not output:
-            return ""
-        
-        # 磁盘挂载/未挂载检查
-        if '未挂载磁盘' in name or '磁盘挂载' in name:
-            lines = output.split('\n')
-            unmounted = []
-            for line in lines[1:]:  # 跳过标题行
-                parts = line.split()
-                if len(parts) >= 4:
-                    mountpoint = parts[-1] if parts[-1] != '-' else ''
-                    if not mountpoint or mountpoint == '':
-                        disk_name = parts[0]
-                        disk_size = parts[1] if len(parts) > 1 else '未知'
-                        unmounted.append(f"{disk_name} ({disk_size})")
-            
-            conclusion = "\n【结论】"
-            if unmounted:
-                conclusion += f"\n发现 {len(unmounted)} 个未挂载磁盘:"
-                for d in unmounted:
-                    conclusion += f"\n  - {d}"
-            else:
-                conclusion += "\n所有磁盘均已挂载，无未挂载磁盘"
-            return output + conclusion
-        
-        # 内存使用情况
-        if '内存' in name:
-            lines = output.split('\n')
-            mem_info = {}
-            for line in lines:
-                if 'Mem:' in line:
-                    parts = line.split()
-                    mem_info['total'] = parts[1] if len(parts) > 1 else '0'
-                    mem_info['used'] = parts[2] if len(parts) > 2 else '0'
-                    mem_info['free'] = parts[3] if len(parts) > 3 else '0'
-                elif 'available' in line:
-                    parts = line.split()
-                    mem_info['available'] = parts[-1] if parts else '0'
-            
-            conclusion = "\n【结论】"
-            if 'total' in mem_info:
-                try:
-                    total_kb = int(mem_info['total'])
-                    used_kb = int(mem_info.get('used', 0))
-                    avail_kb = int(mem_info.get('available', 0))
-                    if total_kb > 0:
-                        used_pct = (used_kb / total_kb) * 100
-                        avail_pct = (avail_kb / total_kb) * 100
-                        conclusion += f"\n内存总容量: {self._format_kb(total_kb)}"
-                        conclusion += f"\n已使用: {self._format_kb(used_kb)} ({used_pct:.1f}%)"
-                        conclusion += f"\n可用: {self._format_kb(avail_kb)} ({avail_pct:.1f}%)"
-                        
-                        # 风险评估
-                        if used_pct >= 90:
-                            conclusion += "\n⚠️ 风险: 内存使用率高于90%，建议关注"
-                        elif used_pct >= 80:
-                            conclusion += "\n⚡ 注意: 内存使用率高于80%，存在风险"
-                        else:
-                            conclusion += "\n✓ 正常: 内存使用率正常"
-                except:
-                    pass
-            return output + conclusion
-        
-        # CPU负载
-        if 'CPU' in name or 'cpu' in name or '负载' in name:
-            conclusion = "\n【结论】"
-            # 尝试解析 load average
-            import re
-            match = re.search(r'load average[:\s]+(\d+\.?\d*)', output, re.IGNORECASE)
-            if match:
-                try:
-                    load = float(match.group(1))
-                    conclusion += f"\n1分钟负载平均值: {load}"
-                    
-                    # 简单风险评估 (假设4核)
-                    if load >= 3:
-                        conclusion += "\n⚠️ 风险: CPU负载过高，建议检查运行进程"
-                    elif load >= 2:
-                        conclusion += "\n⚡ 注意: CPU负载偏高"
-                    else:
-                        conclusion += "\n✓ 正常: CPU负载正常"
-                except:
-                    pass
-            
-            # 尝试解析CPU使用率
-            match = re.search(r'(\d+\.?\d*)\s*%?\s*(id|i?d?le)', output, re.IGNORECASE)
-            if match:
-                try:
-                    idle = float(match.group(1))
-                    used_pct = 100 - idle
-                    if used_pct > 0:
-                        conclusion += f"\nCPU使用率: {used_pct:.1f}%"
-                except:
-                    pass
-            
-            if conclusion == "\n【结论】":
-                conclusion += "\n无法解析CPU负载数据"
-            return output + conclusion
-        
-        return output
-    
+        """Use the same evidence-based conclusion as scheduled inspection."""
+        return format_check_output(name, output)
+
     def _format_kb(self, kb: int) -> str:
         """格式化KB为人类可读格式"""
         if kb >= 1024*1024:
@@ -2050,38 +1926,11 @@ class InspectionPage(QWidget):
             _d("EXPORT", f"User selected path: {file_path}")
             
             inspection_items = []
-            for i in range(self.inspect_list.count()):
-                item = self.inspect_list.item(i)
-                item_data = item.data(Qt.ItemDataRole.UserRole)
-                if item_data:
-                    name = item_data.get('Name', item_data.get('name', '未知'))
-                    output = self.builtin_outputs.get(name, '')
-                    status = 'normal'
-                    if output:
-                        status_lines = [
-                            l.strip()
-                            for l in output.split('\n')
-                            if re.search(r'^(状态|结论|结果|检测结果)\s*[:：]', l.strip())
-                        ]
-                        status_text = '\n'.join(status_lines)
-                        if status_text:
-                            lowered_status = status_text.lower()
-                            has_normal = '✅' in status_text or '正常' in status_text or 'success' in lowered_status or 'ok' in lowered_status
-                            if any(kw in lowered_status for kw in ['🔴', '异常', '高风险', '错误:', '失败:', '故障:', 'critical', 'error:', 'failed']) and not has_normal:
-                                status = 'error'
-                            elif any(kw in lowered_status for kw in ['⚠️', '警告', '中风险', '注意:', '风险:', 'warning:', 'warn:']) and not has_normal:
-                                status = 'warning'
-                        elif any(re.search(pattern, output, re.IGNORECASE) for pattern in [
-                            r'执行异常\s*[:：]',
-                            r'执行错误\s*[:：]',
-                            r'ssh.*失败',
-                            r'command not found',
-                            r'permission denied',
-                            r'no such file or directory',
-                        ]):
-                            status = 'error'
-                    inspection_items.append({'name': name, 'status': status, 'output': output})
-            
+            for item_data in self._get_checked_inspection_items():
+                name = item_data.get('Name', item_data.get('name', '未知'))
+                output = self.builtin_outputs.get(name, self.custom_script_outputs.get(name, ''))
+                inspection_items.append({'name': name, 'status': classify_output(output), 'output': output})
+
             html_content = self._generate_ai_report_html(result, product_name, timestamp, inspection_items)
             _d("EXPORT", f"HTML content generated, length: {len(html_content)}")
             
@@ -2387,10 +2236,42 @@ class InspectionPage(QWidget):
             picked = [f"已获取巡检结果，共 {len(lines)} 行，详情中查看命令执行结果"]
 
         if not picked:
-            status_text = {"error": "未获取到有效输出", "warning": "输出为空或无法解析"}.get(status, "未发现明显异常")
+            status_text = {
+                "normal": "本项未达到默认告警阈值",
+                "error": "未获取到有效输出", "warning": "输出为空或无法解析",
+                "unknown": "未获取到有效输出，无法判定",
+                "info": "仅采集信息，需结合业务基线核对",
+                "not_applicable": "当前环境不适用此项检查",
+            }.get(status, "未获取到有效输出，无法判定")
             picked = [status_text]
 
         return picked
+
+    @staticmethod
+    def _baseline_process_rows(output: str, metric: str):
+        """Parse the bounded ps table by header, retaining names that contain spaces."""
+        field = '%CPU' if metric == 'cpu' else '%MEM'
+        columns = None
+        rows = []
+        for line in str(output or '').splitlines():
+            parts = line.split()
+            if 'PID' in parts and field in parts and 'COMMAND' in parts and 'PPID' in parts:
+                columns = parts
+                continue
+            if columns is None:
+                continue
+            parts = line.split(None, len(columns) - 1)
+            if len(parts) != len(columns) or not parts[0].isdigit():
+                continue
+            try:
+                value = float(parts[columns.index(field)])
+            except ValueError:
+                continue
+            if value >= 0:
+                rows.append({'process': parts[columns.index('COMMAND')][:48], metric: value})
+        if columns is None:
+            return None
+        return sorted(rows, key=lambda row: row[metric], reverse=True)[:10]
 
     def _extract_cpu_top_rows(self, name: str, output: str) -> list:
         """提取CPU占用TOP进程，返回[{process, cpu}]。"""
@@ -2404,6 +2285,10 @@ class InspectionPage(QWidget):
             return []
         if "每颗" in raw_name or "每核" in raw_name:
             return []
+
+        baseline = self._baseline_process_rows(output, 'cpu')
+        if baseline is not None:
+            return baseline
 
         rows = []
         for raw_line in (output or "").splitlines():
@@ -2476,6 +2361,10 @@ class InspectionPage(QWidget):
         name_text = str(name or "").lower()
         if not any(key in name_text for key in ["内存", "mem"]):
             return []
+
+        baseline = self._baseline_process_rows(output, 'mem')
+        if baseline is not None:
+            return baseline
 
         rows = []
         for raw_line in (output or "").splitlines():
@@ -2843,6 +2732,9 @@ class InspectionPage(QWidget):
     def _build_key_result_html(self, name: str, output: str, status: str) -> tuple:
         """生成概要文本和关键结果HTML。"""
         import html as _html
+        if not str(output or '').strip():
+            summary = '未获取到有效输出，无法判定'
+            return summary, f'<ul class="key-result-list"><li>{summary}</li></ul>'
         docker_containers = self._parse_docker_container_rows(name, output)
         if docker_containers:
             running = sum(1 for row in docker_containers if row["state"] == "运行中")
@@ -3172,9 +3064,6 @@ class InspectionPage(QWidget):
         warning_count = len(warning_items)
         normal_count = len(normal_items)
         
-        if total_items == 0:
-            total_items = max(issue_count + warning_count + 10, 15)
-            normal_count = max(0, total_items - issue_count - warning_count)
 
         ai_result = re.sub(r'<think\b[^>]*>.*?</think\s*>', '', ai_result, flags=re.DOTALL)
         ai_result = re.sub(r'<thinking\b[^>]*>.*?</thinking\s*>', '', ai_result, flags=re.DOTALL)
@@ -3353,10 +3242,7 @@ class InspectionPage(QWidget):
         ai_warning_keywords = []
 
         if not inspection_items:
-            issue_count = len(issue_keywords)
-            warning_count = len(warning_keywords)
-            total_items = max(issue_count + warning_count + 10, 15)
-            normal_count = max(0, total_items - issue_count - warning_count)
+            issue_count = warning_count = total_items = normal_count = 0
         else:
             def normalize_text(value: str) -> str:
                 return re.sub(r'[\s\W_]+', '', str(value or '').lower())
@@ -3577,6 +3463,9 @@ class InspectionPage(QWidget):
 
         import html as _html
 
+        unknown_count = sum(i.get('status') == 'unknown' for i in inspection_items)
+        info_count = sum(i.get('status') == 'info' for i in inspection_items)
+        na_count = sum(i.get('status') == 'not_applicable' for i in inspection_items)
         if issue_count > 0:
             overall_class = 'bad'
             overall_text = '异常'
@@ -3584,11 +3473,15 @@ class InspectionPage(QWidget):
         elif warning_count > 0:
             overall_class = 'warn'
             overall_text = '警告'
-            overall_desc = f'发现 {warning_count} 个警告项，系统整体可用但建议持续关注。'
+            overall_desc = f'发现 {warning_count} 个警告项，请结合业务影响核查；该结果不代表系统整体可用性。'
+        elif unknown_count or total_items == 0 or normal_count == 0:
+            overall_class = 'neutral'
+            overall_text = '待核查'
+            overall_desc = '存在未获取数据或缺少可判定检查；信息清单和不适用项不计为正常。'
         else:
             overall_class = 'ok'
-            overall_text = '正常'
-            overall_desc = '未发现异常和警告，当前巡检结果整体正常。'
+            overall_text = '已判定项未见异常'
+            overall_desc = '规则判定项未达到告警阈值；信息采集仍需结合业务基线人工核对。'
 
         def normalize_display_text(text):
             return str(text or '').replace('高风险', '异常').replace('中风险', '警告')
@@ -3607,7 +3500,7 @@ class InspectionPage(QWidget):
                 critical_items_html += f'<li><b class="badge warn">警告</b><span>{_html.escape(normalize_display_text(warn))}</span></li>'
             critical_items_html += '</ul>'
         else:
-            critical_items_html = '<h2>关键异常与警告</h2><div class="empty-state">未发现异常和警告项。</div>'
+            critical_items_html = '<h2>关键异常与警告</h2><div class="empty-state">已判定项中未发现异常和警告；未获取、仅采集和不适用项不能据此视为正常。</div>'
 
         inspection_list_html = '<h2>巡检结果</h2>'
         if inspection_items:
@@ -3622,10 +3515,14 @@ class InspectionPage(QWidget):
                     item_class = 'warn'
                     status_text = '警告'
                     impact_text = '影响判断：建议关注'
-                else:
+                elif status == 'normal':
                     item_class = 'ok'
                     status_text = '正常'
-                    impact_text = '影响判断：无明显影响'
+                    impact_text = '影响判断：本项未达到默认告警阈值'
+                else:
+                    item_class = 'neutral'
+                    status_text = STATUS_LABELS.get(status, '未获取')
+                    impact_text = '影响判断：需结合适用环境与业务基线核对'
 
                 display_name = normalize_item_title(item.get('name', '未知'))
                 raw_output = normalize_display_text(item.get('output', ''))
@@ -3748,6 +3645,7 @@ class InspectionPage(QWidget):
         .badge.ok {{ background: #dcfce7; }}
         .badge.warn {{ background: #fef3c7; }}
         .badge.bad {{ background: #fee2e2; }}
+        .badge.neutral, .summary.neutral {{ background: #f1f5f9; color: #475569; }}
         .result {{ color: #334155; white-space: pre-wrap; overflow-wrap: anywhere; }}
         .impact {{ margin-top: 6px; color: #64748b; font-size: 13px; }}
         .expanded-result {{ margin: 12px 0 0 58px; }}
@@ -3812,6 +3710,9 @@ class InspectionPage(QWidget):
                 <div class="stat ok"><strong>{normal_count}</strong><span>正常</span></div>
                 <div class="stat warn"><strong>{warning_count}</strong><span>警告</span></div>
                 <div class="stat bad"><strong>{issue_count}</strong><span>异常</span></div>
+                <div class="stat"><strong>{unknown_count}</strong><span>未获取</span></div>
+                <div class="stat"><strong>{info_count}</strong><span>仅采集</span></div>
+                <div class="stat"><strong>{na_count}</strong><span>不适用</span></div>
             </div>
             {inspection_list_html}
             {critical_items_html}
@@ -4587,6 +4488,11 @@ Network: 120 packets/s""",
             "pending": ("#FFFFFF", "#334155", "#e5e7eb"),
             "success": ("#50C9C3", "#FFFFFF", "#3BA8A2"),
             "failed": ("#FEE2E2", "#991B1B", "#fecaca"),
+            "error": ("#FEE2E2", "#991B1B", "#fecaca"),
+            "warning": ("#FEF3C7", "#92400E", "#FDE68A"),
+            "unknown": ("#F1F5F9", "#475569", "#CBD5E1"),
+            "info": ("#EFF6FF", "#1E40AF", "#BFDBFE"),
+            "not_applicable": ("#F8FAFC", "#64748B", "#E2E8F0"),
         }
         bg, fg, border = styles.get(status, styles["idle"])
         widget.setStyleSheet(f"""
@@ -4618,16 +4524,17 @@ Network: 120 packets/s""",
             item.setToolTip("巡检完成" if success else (error_msg or "巡检失败"))
             # 设置前缀
             base_text = item.text().lstrip("✓✗⏳ ").strip()
-            if success:
-                item.setText(f"✓ {base_text}")
-            else:
-                item.setText(f"✗ {base_text}")
+            raw = self.builtin_outputs.get(script_name, self.custom_script_outputs.get(script_name, ''))
+            health = classify_output(raw) if success else 'unknown'
+            state_label = STATUS_LABELS.get(health, '未获取')
+            item.setText(f"{base_text} · {state_label}")
+            item.setToolTip(error_msg or state_label)
             label = self.list_widget_for_script.get(script_name)
             if label:
                 text_label = getattr(label, "_status_text_label", None)
                 if text_label:
                     text_label.setText(item.text())
-                self._apply_output_status_label_style(label, "success" if success else "failed", error_msg)
+                self._apply_output_status_label_style(label, "success" if health == "normal" else health, error_msg or state_label)
             # 强制重绘 - 使用repaint确保视觉更新
             self.output_list.repaint()
             # 自动滚动到当前项

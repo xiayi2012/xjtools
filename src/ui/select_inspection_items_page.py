@@ -1,3 +1,4 @@
+from scripts.inspection_catalog import get_builtin_checks
 """
 选择巡检项页面模块
 实现巡检项和自定义脚本的选择功能
@@ -179,45 +180,8 @@ class SelectInspectionItemsPage(QWidget):
     
     def _populate_inspect_list(self):
         """填充巡检项列表"""
-        self._all_items = [
-            # 基础系统检查 - 第一梯队（主机信息）
-            {"name": "主机名", "command": "hostname", "checked": True, "category": "基础系统"},
-            {"name": "系统版本", "command": "cat /etc/os-release | grep PRETTY_NAME | cut -d'\"' -f2", "checked": True, "category": "基础系统"},
-            {"name": "系统时间检查", "command": "remote_s=$(date +%s); remote_t=$(date '+%Y-%m-%d %H:%M:%S'); utc_s=$(date -u +%s); diff=$((remote_s - utc_s)); diff_abs=$diff; if [ $diff -lt 0 ]; then diff_abs=$((-$diff)); fi; echo \"系统时间: $remote_t\"; echo \"时差: ${diff_abs}秒\"; if [ $diff_abs -gt 180 ]; then echo \"状态: ⚠️ 超过3分钟\"; else echo \"状态: ✅ 正常\"; fi", "checked": True, "category": "基础系统"},
-            # CPU相关
-            {"name": "CPU负载检查(≥80%中风险,≥100%异常)", "command": "load=$(awk '{print $1}' /proc/loadavg); cores=$(nproc); pct=$(awk \"BEGIN {printf \\\"%.1f\\\", $load/$cores*100}\"); echo \"CPU 1分钟负载: $load ($pct% @ ${cores}核)\"; if [ ${load%.*} -ge 100 ]; then echo \"状态: 🔴 异常:负载≥100%\"; elif [ ${load%.*} -ge 80 ]; then echo \"状态: ⚠️ 中风险:负载≥80%\"; else echo \"状态: ✅ 正常\"; fi", "checked": True, "category": "基础系统"},
-            {"name": "每颗CPU使用率", "command": "top -bn1", "checked": True, "category": "基础系统"},
-            {"name": "CPU使用率TOP10进程", "command": "ps aux --sort=-%cpu | head -11", "checked": True, "category": "基础系统"},
-            # 内存相关
-            {"name": "内存使用情况(≥70%有风险,≥90%严重)", "command": "free -m | awk '/^Mem:/{total=$2;used=$3;pct=used/total*100;printf \"总内存: %dMB\\n已使用: %dMB (%.1f%%)\\n\",total,used,pct;if(pct>=90)print \"状态: 🔴 超过90%严重\";else if(pct>=70)print \"状态: ⚠️ 超过70%有风险\";else print \"状态: ✅ 正常\"}'", "checked": True, "category": "基础系统"},
-            {"name": "进程内存使用率", "command": "ps aux --sort=-%mem | head -20", "checked": True, "category": "基础系统"},
-            {"name": "交换分区使用情况", "command": "free -h", "checked": True, "category": "基础系统"},
-            # 其他基础系统
-            {"name": "系统运行时间", "command": "uptime", "checked": True, "category": "基础系统"},
-            {"name": "磁盘使用率检查", "command": "df -h", "checked": True, "category": "基础系统"},
-            {"name": "未挂载磁盘检查", "command": "lsblk -o NAME,SIZE,TYPE,MOUNTPOINT", "checked": True, "category": "基础系统"},
-            {"name": "进程运行时间检查", "command": "ps -eo pid,etime,time,args --sort=etime | head -20", "checked": True, "category": "基础系统"},
-            {"name": "进程总数统计", "command": "ps aux | wc -l", "checked": True, "category": "基础系统"},
-            {"name": "登录用户信息", "command": "who", "checked": True, "category": "基础系统"},
-            {"name": "登录记录", "command": "last | head -20", "checked": True, "category": "基础系统"},
-            # 网络检查
-            {"name": "网络接口信息", "command": "ip addr show", "checked": True, "category": "网络"},
-            {"name": "网卡状态检查", "command": "ip link show", "checked": True, "category": "网络"},
-            {"name": "网卡吞吐量检查", "command": "cat /proc/net/dev", "checked": True, "category": "网络"},
-            {"name": "端口监听检查", "command": "ss -tuln", "checked": True, "category": "网络"},
-            {"name": "DNS 解析检查", "command": "cat /etc/resolv.conf", "checked": True, "category": "网络"},
-            {"name": "网络延迟测试", "command": "ping -c 3 223.5.5.5", "checked": True, "category": "网络"},
-            {"name": "路由检查", "command": "ip route show", "checked": True, "category": "网络"},
-            {"name": "连接数检查", "command": "ss -s", "checked": True, "category": "网络"},
-            # 安全检查
-            {"name": "系统用户列表", "command": "cat /etc/passwd | cut -d: -f1", "checked": True, "category": "安全"},
-            # Docker 检查
-            {"name": "Docker容器状态", "command": "docker ps -a", "checked": True, "category": "Docker"},
-            {"name": "Docker容器运行时间检查", "command": "docker ps -a", "checked": True, "category": "Docker"},
-            {"name": "Docker镜像列表", "command": "docker images", "checked": True, "category": "Docker"},
-            {"name": "SSL证书有效期检查", "command": "ls -la /etc/ssl/certs/*.pem /etc/pki/tls/certs/*.crt 2>/dev/null | head -20", "checked": True, "category": "Docker"},
-        ]
-        
+        self._all_items = [dict(item, name=item['Name']) for item in get_builtin_checks()]
+
         for item_data in self._all_items:
             item = QListWidgetItem(f"{item_data['name']} [{item_data['category']}]")
             item.setData(Qt.ItemDataRole.UserRole, item_data)
@@ -426,7 +390,10 @@ class SelectInspectionItemsPage(QWidget):
             if is_checked:
                 scripts.append({
                     "name": item_data['name'],
-                    "command": item_data['command']
+                    "command": item_data['command'],
+                    "id": item_data.get('id'),
+                    "timeout": item_data.get('timeout', 300),
+                    "requires_completion": item_data.get('requires_completion', False)
                 })
         
         return scripts
