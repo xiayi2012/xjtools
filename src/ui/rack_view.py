@@ -2,7 +2,7 @@
 
 from uuid import uuid4
 
-from PyQt6.QtCore import Qt, pyqtSignal, QTimer
+from PyQt6.QtCore import Qt, pyqtSignal, QTimer, QRectF
 from PyQt6.QtGui import QPainter, QColor, QPen
 from PyQt6.QtWidgets import (
     QWidget, QFrame, QLabel, QPushButton, QVBoxLayout, QHBoxLayout, QGridLayout,
@@ -10,6 +10,9 @@ from PyQt6.QtWidgets import (
 )
 
 from core.rack_inventory import partition_devices
+from .hardware_art import draw_cabinet, draw_server, EmptyRackIllustration
+
+UNIT_PITCH = 44
 
 
 def plain_label(text, parent=None):
@@ -90,13 +93,13 @@ class RackFace(QFrame):
         for server in devices:
             start, height = server['rack_start_u'], server['rack_height_u']
             occupied.update(range(start, start + height))
-            button = RackDeviceButton()
+            button = RackDeviceButton(server)
             button.setProperty('device', True)
             button.setCheckable(True)
             button.setCursor(Qt.CursorShape.PointingHandCursor)
             button.setObjectName('rackDevice_' + server['id'])
             button.setMinimumWidth(240)
-            button.setFixedHeight(height * 27 - 2)
+            button.setFixedHeight(height * UNIT_PITCH - 2)
             button.setToolTip(f'{server.get("name") or server.get("host", "设备")}\n'
                               f'{server.get("host", "")} · {server.get("product", "")}\n'
                               f'U{start:02}–U{start+height-1:02} · {height}U\n点击查看详情')
@@ -105,7 +108,7 @@ class RackFace(QFrame):
             self.device_buttons[server['id']] = button
         for u in range(units, 0, -1):
             row = units - u
-            layout.setRowMinimumHeight(row, 25)
+            layout.setRowMinimumHeight(row, UNIT_PITCH - 2)
             number = QLabel(f'{u:02}')
             number.setAlignment(Qt.AlignmentFlag.AlignCenter)
             number.setFixedWidth(23)
@@ -114,23 +117,31 @@ class RackFace(QFrame):
             screw.setFixedWidth(10)
             layout.addWidget(screw, row, 2)
             if u not in occupied:
-                button = QPushButton('＋ 添加设备')
+                button = QPushButton('＋')
                 button.setProperty('empty', True)
-                button.setFixedHeight(25)
+                button.setFixedHeight(UNIT_PITCH - 2)
                 button.setCursor(Qt.CursorShape.PointingHandCursor)
                 button.setToolTip(f'在 {rack["code"]} / U{u:02} 添加设备')
                 button.clicked.connect(lambda checked=False, unit=u: self.empty_selected.emit(rack['id'], unit))
                 layout.addWidget(button, row, 1)
                 self.empty_buttons[u] = button
-        self.setFixedHeight(24 + units * 27 - 2)
+        layout.setContentsMargins(8, 40, 8, 28)
+        self.setFixedHeight(68 + units * UNIT_PITCH - 2)
         self.update_status(None)
+
+    def paintEvent(self, event):
+        super().paintEvent(event)
+        painter = QPainter(self)
+        draw_cabinet(painter, QRectF(self.rect()), f'{self.rack.get("code", "")}  /  19" RACK')
 
     def update_status(self, connected_id, selected_id=None, states=None):
         for server in self.devices:
             button = self.device_buttons[server['id']]
             selected = selected_id == server['id']
             button.setChecked(selected)
+            button.connected = server['id'] == connected_id
             state = (states or {}).get(server['id'], '')
+            button.device_state = state
             lamp = '●' if server['id'] == connected_id else '○'
             name = server.get('name') or server.get('host', '设备')
             # Elision uses the actual widget width after the fixed-size rack is laid out.
@@ -142,19 +153,23 @@ class RackFace(QFrame):
 
 
 class RackDeviceButton(QPushButton):
+    def __init__(self, server=None, parent=None):
+        super().__init__(parent)
+        self.server = server or {}
+        self.connected = False
+        self.device_state = ''
+        self.setCheckable(True)
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+
     def paintEvent(self, event):
-        super().paintEvent(event)
         painter = QPainter(self)
-        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-        painter.setPen(QPen(QColor('#1d2d35'), 1))
-        painter.setBrush(QColor('#a2b4bd'))
-        for x in (3, self.width() - 4):
-            for y in (6, self.height() - 6):
-                painter.drawEllipse(x - 1, y - 1, 3, 3)
-        if self.height() > 30:
-            painter.setPen(QPen(QColor('#1a2c35'), 2))
-            for x in range(18, self.width() - 14, 6):
-                painter.drawLine(x, self.height() - 8, x + 2, self.height() - 8)
+        draw_server(painter, QRectF(self.rect()), self.server.get('name') or self.server.get('host', '服务器'),
+                    self.server.get('host', ''), self.connected, self.isChecked(), self.underMouse() or self.hasFocus(),
+                    self.device_state)
+        if self.property('matched'):
+            painter.setBrush(Qt.BrushStyle.NoBrush)
+            painter.setPen(QPen(QColor('#e4ba67'), 2))
+            painter.drawRoundedRect(QRectF(self.rect()).adjusted(1, 1, -1, -1), 3, 3)
 
 
 class RackView(QWidget):
@@ -171,6 +186,7 @@ class RackView(QWidget):
         self.selection_timer.setSingleShot(True)
         self.selection_timer.timeout.connect(self.scroll_to_selected)
         self.faces = []
+        self.unassigned_buttons = {}
         self.detail_item = None
         layout = QHBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -229,9 +245,23 @@ class RackView(QWidget):
             row.addWidget(column)
             self.faces.append(face)
         if not self.faces:
-            message = plain_label('暂无匹配机柜。\n点击“新增机柜”创建机柜，或调整搜索和机房筛选。')
-            message.setStyleSheet('padding:40px; color:#6b7b85; font-size:14px;')
-            row.addWidget(message)
+            if not page.racks:
+                empty = QWidget()
+                empty_layout = QVBoxLayout(empty)
+                empty_layout.setContentsMargins(8, 0, 8, 8)
+                empty_layout.addWidget(EmptyRackIllustration())
+                caption = plain_label('机柜外观示意 · 尚未创建机柜')
+                caption.setAlignment(Qt.AlignmentFlag.AlignCenter)
+                caption.setStyleSheet('font-size:12px; color:#687e89;')
+                empty_layout.addWidget(caption)
+                create = QPushButton('创建第一个机柜')
+                create.setObjectName('createFirstRack')
+                create.setMinimumHeight(36)
+                create.clicked.connect(lambda: page.edit_rack())
+                empty_layout.addWidget(create)
+                row.addWidget(empty)
+            else:
+                row.addWidget(plain_label('暂无匹配机柜，请调整搜索和机房筛选。'))
         body.addLayout(row)
         for title, devices in [('待上架设备', unassigned), ('位置待修复 · 请编辑设备位置', broken)]:
             devices = [s for s in devices if matches(s)]
@@ -241,10 +271,15 @@ class RackView(QWidget):
             label.setStyleSheet('font-size:14px; font-weight:600; padding-top:12px; color:#44616d;')
             body.addWidget(label)
             for server in devices:
-                button = QPushButton(f'{server.get("name") or server.get("host", "设备")}   ·   {server.get("host", "")}   → 查看 / 上架')
-                button.setMinimumHeight(36)
+                button = RackDeviceButton(server)
+                button.setObjectName('unassignedDevice_' + str(server.get('id')))
+                button.setFixedHeight(84)
+                button.setMinimumWidth(260)
+                button.setToolTip(f'{server.get("name") or server.get("host", "设备")}\n{server.get("host", "")}\n点击查看详情并安排上架')
+                button.setAccessibleName(button.toolTip())
                 button.clicked.connect(lambda checked=False, sid=server.get('id'): self.select_device(sid))
                 body.addWidget(button)
+                self.unassigned_buttons[server.get('id')] = button
         body.addStretch()
         self.rack_scroll.setWidget(content)
         layout.addWidget(self.rack_scroll, 1)
@@ -267,6 +302,11 @@ class RackView(QWidget):
         self.page.selected_device_id = server_id
         for face in self.faces:
             face.update_status(self.page.connected_server_id, server_id, self.page.device_states)
+        for sid, button in self.unassigned_buttons.items():
+            button.connected = sid == self.page.connected_server_id
+            button.device_state = self.page.device_states.get(sid, '')
+            button.setChecked(sid == server_id)
+            button.update()
         while self.detail_layout.count():
             item = self.detail_layout.takeAt(0)
             if item.widget():

@@ -89,3 +89,19 @@ def test_42u_selection_scrolls_device_into_view(qtbot, monkeypatch, tmp_path):
     page.show()
     page.rack_view.select_device('d1')
     qtbot.waitUntil(lambda: page.rack_view.rack_scroll.verticalScrollBar().value() > 0)
+
+
+def test_empty_inventory_shows_drawn_cabinet_and_unassigned_server(qtbot, monkeypatch, tmp_path):
+    from ui.rack_view import RackDeviceButton
+    from PyQt6.QtWidgets import QPushButton, QWidget
+    monkeypatch.setattr('ui.product_page.get_config_dir', lambda: tmp_path)
+    page = ProductPage()
+    qtbot.addWidget(page)
+    page.commit_inventory([dict(id='loose', name='待上架设备', host='192.0.2.10')], [])
+    assert page.rack_view.findChild(QWidget, 'emptyRackIllustration') is not None
+    button = page.rack_view.findChild(RackDeviceButton, 'unassignedDevice_loose')
+    assert button is not None
+    button.click()
+    assert page.rack_view.selected_id == 'loose'
+    assert page.rack_view.findChild(QPushButton, 'createFirstRack') is not None
+    assert page.racks == []

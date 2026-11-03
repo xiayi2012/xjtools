@@ -36,6 +36,8 @@ def main():
 
     window = MainWindow()
     window.show()
+    if '--devices' in sys.argv:
+        window.switch_page(1, force=True)
 
     sys.exit(app.exec())
 
