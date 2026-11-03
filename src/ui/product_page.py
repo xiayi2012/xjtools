@@ -25,6 +25,8 @@ from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
 
 from utils import get_config_dir as _get_config_dir
 from .dialog_icons import dialog_icon
+from core.rack_inventory import InventoryStore, placement_error, recommend_slot
+from .rack_view import RackView, RackDialog
 
 
 class ClickableLabel(QLabel):
@@ -96,10 +98,12 @@ def normalize_server_record(server: dict) -> dict:
 class AddServerDialog(QDialog):
     """添加/编辑服务器对话框"""
     
-    def __init__(self, server_data: dict = None, parent=None):
+    def __init__(self, server_data: dict = None, parent=None, racks=None, servers=None, placement=None):
         super().__init__(parent)
         self.server_data = server_data or {}
         self.is_edit = bool(server_data)
+        self.racks = racks if racks is not None else getattr(parent, 'racks', [])
+        self.servers = servers if servers is not None else getattr(parent, 'servers', [])
         
         self.setWindowTitle("编辑服务器" if self.is_edit else "添加服务器")
         self.setWindowIcon(dialog_icon("product.svg"))
@@ -111,6 +115,12 @@ class AddServerDialog(QDialog):
         
         if self.is_edit:
             self.load_server_data()
+        position = placement or self.server_data
+        index = self.rack_combo.findData(position.get('rack_id'))
+        self.rack_combo.setCurrentIndex(max(0, index))
+        self.rack_start.setValue(position.get('rack_start_u', 1) or 1)
+        self.rack_height.setValue(position.get('rack_height_u', 1) or 1)
+        self.update_position_preview()
     
     def init_ui(self):
         """初始化UI"""
@@ -197,6 +207,33 @@ class AddServerDialog(QDialog):
         self.switch_root_checkbox = QCheckBox("需要切换root")
         self.switch_root_checkbox.setChecked(False)
         layout.addWidget(self.switch_root_checkbox)
+
+        self.rack_combo = QComboBox()
+        self.rack_combo.addItem('暂不上架', None)
+        for rack in self.racks:
+            self.rack_combo.addItem(f'{rack.get("code", "")} · {rack.get("name", "")} ({rack.get("units")}U)', rack['id'])
+        layout.addWidget(QLabel('机柜位置'))
+        layout.addWidget(self.rack_combo)
+        position_row = QHBoxLayout()
+        self.rack_start = QSpinBox()
+        self.rack_start.setRange(1, 60)
+        self.rack_start.setPrefix('起始 U ')
+        self.rack_height = QSpinBox()
+        self.rack_height.setRange(1, 60)
+        self.rack_height.setPrefix('高度 ')
+        self.rack_height.setSuffix(' U')
+        self.recommend_btn = QPushButton('推荐空位')
+        self.recommend_btn.clicked.connect(self.recommend_position)
+        for field in (self.rack_start, self.rack_height, self.recommend_btn):
+            position_row.addWidget(field)
+        layout.addLayout(position_row)
+        self.position_preview = QLabel()
+        self.position_preview.setTextFormat(Qt.TextFormat.PlainText)
+        self.position_preview.setWordWrap(True)
+        layout.addWidget(self.position_preview)
+        self.rack_combo.currentIndexChanged.connect(self.update_position_preview)
+        self.rack_start.valueChanged.connect(self.update_position_preview)
+        self.rack_height.valueChanged.connect(self.update_position_preview)
         
 
         
@@ -261,13 +298,40 @@ class AddServerDialog(QDialog):
             QMessageBox.warning(self, "输入错误", "请输入密码")
             return
         
+        error = placement_error(self.position_info(), self.racks, self.servers)
+        if error:
+            QMessageBox.warning(self, '位置无效', error)
+            return
         self.accept()
+
+    def position_info(self):
+        return dict(id=self.server_data.get('id'), rack_id=self.rack_combo.currentData(),
+                    rack_start_u=self.rack_start.value(), rack_height_u=self.rack_height.value())
+
+    def update_position_preview(self, *args):
+        positioned = bool(self.rack_combo.currentData())
+        for field in (self.rack_start, self.rack_height, self.recommend_btn):
+            field.setEnabled(positioned)
+        start, height = self.rack_start.value(), self.rack_height.value()
+        error = placement_error(self.position_info(), self.racks, self.servers)
+        self.position_preview.setText(error if error else (f'占用 U{start:02}–U{start+height-1:02}，共 {height}U（起始 U 为底部）' if positioned else '保存在待上架区，可稍后安排位置'))
+        self.position_preview.setStyleSheet('color:#b45309;' if error else 'color:#687e89;')
+
+    def recommend_position(self):
+        rack = next((r for r in self.racks if r.get('id') == self.rack_combo.currentData()), None)
+        if rack:
+            start = recommend_slot(rack, self.servers, self.rack_height.value(), self.server_data.get('id'))
+            if start is None:
+                QMessageBox.warning(self, '无可用位置', '该机柜没有足够的连续空位，请选择其他机柜或减少高度')
+            else:
+                self.rack_start.setValue(start)
     
     def get_server_info(self) -> dict:
         """获取服务器信息"""
         password = self.password_input.text()
         encrypted_password = encrypt_password(password) if password else self.server_data.get("encrypted_password", "")
         return {
+            **self.server_data,
             "product": self.product_combo.currentText().strip(),
             "name": self.name_input.text().strip(),
             "host": self.host_input.text().strip(),
@@ -275,7 +339,10 @@ class AddServerDialog(QDialog):
             "username": self.username_input.text().strip(),
             "encrypted_password": encrypted_password,
             "switch_root": self.switch_root_checkbox.isChecked(),
-            "id": self.server_data.get("id", None) or f"{self.host_input.text().strip()}_{self.port_input.value()}_{self.username_input.text().strip()}"
+            "id": self.server_data.get("id", None) or f"{self.host_input.text().strip()}_{self.port_input.value()}_{self.username_input.text().strip()}",
+            'rack_id': self.rack_combo.currentData(),
+            'rack_start_u': self.rack_start.value(),
+            'rack_height_u': self.rack_height.value(),
         }
     
     def open_script_library(self):
@@ -1479,6 +1546,7 @@ class ProductPage(QWidget):
     server_switch_root_request = pyqtSignal(dict)
     schedules_updated = pyqtSignal()
     go_to_next_step = pyqtSignal()  # 下一步按钮点击信号
+    device_operation_requested = pyqtSignal(dict, str)
 
     def __init__(self):
         """初始化产品选择页面"""
@@ -1487,9 +1555,24 @@ class ProductPage(QWidget):
         self.connected_server_id = None
         self.is_root = False
         self.is_grid_view = False
+        self.view_mode = 'list'
+        self.racks = []
+        self.rack_view = None
+        self.selected_device_id = None
+        self.device_states = {}
+        self.inspection_history = {}
+        self.inventory_error = ''
         self.product_sections = []
         self.init_ui()
         self.load_servers()
+        try:
+            history_path = get_config_dir() / 'inspection_history.json'
+            if history_path.exists():
+                data = json.loads(history_path.read_text(encoding='utf-8'))
+                if isinstance(data, dict):
+                    self.inspection_history = {k: v for k, v in data.items() if isinstance(v, dict)}
+        except (OSError, ValueError):
+            self.stats_label.setText('巡检历史读取失败；设备配置不受影响')
 
     def init_ui(self):
         """初始化 UI"""
@@ -1536,6 +1619,21 @@ class ProductPage(QWidget):
             self.view_button_group.addButton(button, int(is_grid))
             switcher_layout.addWidget(button)
         title_layout.addWidget(self.view_switcher)
+        rack_button = QToolButton()
+        rack_button.setObjectName('rackViewButton')
+        rack_button.setProperty('viewChoice', True)
+        rack_button.setIcon(dialog_icon('rack.svg'))
+        rack_button.setFixedSize(36, 28)
+        rack_button.setCheckable(True)
+        rack_button.setToolTip('机柜视图')
+        rack_button.setAccessibleName('机柜视图')
+        rack_button.clicked.connect(lambda: self.set_view_mode('rack'))
+        self.view_button_group.addButton(rack_button, 2)
+        switcher_layout.insertWidget(0, rack_button)
+        self.add_rack_btn = QPushButton('新增机柜')
+        self.add_rack_btn.setMinimumHeight(36)
+        self.add_rack_btn.clicked.connect(lambda: self.edit_rack())
+        title_layout.addWidget(self.add_rack_btn)
         
         # 添加服务器按钮
         self.schedule_btn = QPushButton("定时巡检")
@@ -1554,6 +1652,21 @@ class ProductPage(QWidget):
         title_layout.addWidget(self.add_server_btn)
 
         layout.addLayout(title_layout)
+
+        filter_row = QHBoxLayout()
+        self.search_input = QLineEdit()
+        self.search_input.setPlaceholderText('搜索设备名称、IP、产品或机柜')
+        self.search_input.setMinimumHeight(34)
+        self.search_input.setClearButtonEnabled(True)
+        self.search_input.textChanged.connect(self.update_server_list)
+        self.room_combo = QComboBox()
+        self.room_combo.addItem('全部机房', None)
+        self.room_combo.setMinimumHeight(34)
+        self.room_combo.setMinimumWidth(150)
+        self.room_combo.currentIndexChanged.connect(self.update_server_list)
+        filter_row.addWidget(self.search_input, 1)
+        filter_row.addWidget(self.room_combo)
+        layout.addLayout(filter_row)
 
         # 服务器列表滚动区域
         self.scroll_area = QScrollArea()
@@ -1606,49 +1719,70 @@ class ProductPage(QWidget):
         """切换视图模式"""
         self.set_view_mode(not self.is_grid_view)
 
-    def set_view_mode(self, is_grid: bool):
+    def set_view_mode(self, is_grid):
         """选择视图；重复点击当前选项不会重建列表。"""
-        if self.is_grid_view == is_grid:
+        mode = ('grid' if is_grid else 'list') if isinstance(is_grid, bool) else is_grid
+        if mode not in ('rack', 'list', 'grid') or self.view_mode == mode:
             return
-        self.is_grid_view = is_grid
-        self.view_button_group.button(int(is_grid)).setChecked(True)
+        self.view_mode = mode
+        self.is_grid_view = mode == 'grid'
+        self.view_button_group.button({'list': 0, 'grid': 1, 'rack': 2}[mode]).setChecked(True)
         self.update_server_list()
+        if not self.inventory_error:
+            try:
+                self.inventory_store().save(self.racks, self.servers, mode)
+            except (ValueError, OSError):
+                self.stats_label.setText('视图已切换；偏好未保存，请检查设备位置或配置权限')
+
+    def inventory_store(self):
+        return InventoryStore(get_config_dir() / 'servers.json')
+
+    def commit_inventory(self, servers, racks=None):
+        if self.inventory_error:
+            QMessageBox.warning(self, '配置不可写', self.inventory_error + '\n请先修复原配置并重启程序')
+            return False
+        racks = self.racks if racks is None else racks
+        safe = [normalize_server_record(s) for s in servers]
+        try:
+            self.inventory_store().save(racks, safe, self.view_mode)
+        except (OSError, ValueError) as error:
+            QMessageBox.warning(self, '保存失败', str(error))
+            return False
+        self.servers, self.racks = safe, list(racks)
+        current_room = self.room_combo.currentData()
+        self.room_combo.blockSignals(True)
+        self.room_combo.clear()
+        self.room_combo.addItem('全部机房', None)
+        for room in sorted({r.get('room', '') for r in self.racks}):
+            self.room_combo.addItem(room or '未分配机房', room)
+        self.room_combo.setCurrentIndex(max(0, self.room_combo.findData(current_room)))
+        self.room_combo.blockSignals(False)
+        self.update_server_list()
+        return True
 
     def load_servers(self):
         """加载服务器列表"""
-        config_file = get_config_dir() / "servers.json"
-        
-        if not config_file.exists():
-            self.servers = []
-            self.update_server_list()
-            return
-        
         try:
-            with open(config_file, 'r', encoding='utf-8') as f:
-                data = json.load(f)
-                self.servers = [normalize_server_record(server) for server in data.get("servers", [])]
-        except Exception:
-            self.servers = []
-        
+            data = self.inventory_store().load()
+            self.servers = [normalize_server_record(server) for server in data['servers']]
+            self.racks = data['racks']
+            mode = data.get('preferred_view', 'rack')
+            self.view_mode = mode if mode in ('rack', 'list', 'grid') else 'rack'
+            self.is_grid_view = self.view_mode == 'grid'
+            self.view_button_group.button({'list': 0, 'grid': 1, 'rack': 2}[self.view_mode]).setChecked(True)
+            self.room_combo.blockSignals(True)
+            for room in sorted({r.get('room', '') for r in self.racks}):
+                self.room_combo.addItem(room or '未分配机房', room)
+            self.room_combo.blockSignals(False)
+        except (OSError, ValueError) as error:
+            self.inventory_error = f'设备配置读取失败：{error}'
         self.update_server_list()
     
     def save_servers(self):
         """保存服务器列表"""
-        config_dir = get_config_dir()
-        config_dir.mkdir(exist_ok=True)
-        
-        config_file = config_dir / "servers.json"
-        
-        try:
-            with open(config_file, 'w', encoding='utf-8') as f:
-                safe_servers = [normalize_server_record(server) for server in self.servers]
-                self.servers = safe_servers
-                json.dump({"servers": safe_servers}, f, indent=2, ensure_ascii=False)
-        except Exception as e:
-            from qfluentwidgets import MessageBox
-            MessageBox("保存失败", f"无法保存服务器配置: {str(e)}", self).exec()
+        return self.commit_inventory(self.servers)
     
-    def update_server_list(self):
+    def update_server_list(self, *args):
         """更新服务器列表"""
         # 清除现有分组
         while self.main_layout.count():
@@ -1657,10 +1791,27 @@ class ProductPage(QWidget):
                 item.widget().deleteLater()
         
         self.product_sections.clear()
+        self.rack_view = None
+        if self.view_mode == 'rack':
+            self.rack_view = RackView(self, self.selected_device_id)
+            self.rack_view.action_requested.connect(self.on_rack_action)
+            self.rack_view.empty_selected.connect(self.add_at_position)
+            self.rack_view.rack_edit.connect(self.edit_rack)
+            self.rack_view.rack_delete.connect(self.delete_rack)
+            self.main_layout.addWidget(self.rack_view, 1)
+            self.stats_label.setText(self.inventory_error or f'{len(self.racks)} 个机柜 · {len(self.servers)} 台设备')
+            return
         
         # 按产品分组
         products = {}
         for server in self.servers:
+            query = self.search_input.text().strip().casefold()
+            if query and query not in ' '.join(str(server.get(k, '')) for k in ('name', 'host', 'product', 'username')).casefold():
+                continue
+            room = self.room_combo.currentData()
+            rack = next((r for r in self.racks if r.get('id') == server.get('rack_id')), {})
+            if room is not None and rack.get('room', '') != room:
+                continue
             product = server.get("product", "未分类")
             if product not in products:
                 products[product] = []
@@ -1688,6 +1839,7 @@ class ProductPage(QWidget):
     
     def on_server_connect(self, server: dict):
         """连接/断开服务器"""
+        self.selected_device_id = server.get('id')
         if self.connected_server_id and self.connected_server_id == server.get("id"):
             # 断开连接
             self.server_disconnect_request.emit(server)
@@ -1719,22 +1871,31 @@ class ProductPage(QWidget):
     
     def on_edit_server(self, server: dict):
         """编辑服务器"""
+        if self.device_states.get(server.get('id')) in ('连接中', '巡检中'):
+            QMessageBox.warning(self, '设备操作中', '请等待该设备的连接或巡检结束后再编辑')
+            return
         dialog = AddServerDialog(server, parent=self)
         
         if dialog.exec() == QDialog.DialogCode.Accepted:
             server_info = dialog.get_server_info()
             
-            for i, s in enumerate(self.servers):
-                if s.get("id") == server.get("id"):
-                    self.servers[i] = server_info
-                    break
-            
-            self.save_servers()
-            self.update_server_list()
+            if self.device_states.get(server.get('id')) in ('连接中', '巡检中'):
+                QMessageBox.warning(self, '设备操作中', '该设备正在连接或巡检，请稍后重新编辑')
+                return
+            if server.get('id') == self.connected_server_id and any(server_info.get(k) != server.get(k) for k in ('host', 'port', 'username', 'product')):
+                QMessageBox.warning(self, '请先断开连接', '修改当前设备的主机、端口或用户前，请先断开连接')
+                return
+            self.commit_inventory([server_info if s.get('id') == server.get('id') else s for s in self.servers])
     
     def on_delete_server(self, server: dict):
         """删除服务器"""
         from qfluentwidgets import MessageBox
+        if self.device_states.get(server.get('id')) in ('连接中', '巡检中'):
+            QMessageBox.warning(self, '设备操作中', '请等待该设备的连接或巡检结束后再删除')
+            return
+        if server.get('id') == self.connected_server_id:
+            QMessageBox.warning(self, '请先断开连接', '删除当前已连接设备前，请先断开连接')
+            return
         
         reply = MessageBox(
             "确认删除",
@@ -1743,29 +1904,68 @@ class ProductPage(QWidget):
         )
         
         if reply.exec():
-            self.servers = [s for s in self.servers if s.get("id") != server.get("id")]
-            self.save_servers()
-            self.update_server_list()
+            self.commit_inventory([s for s in self.servers if s.get('id') != server.get('id')])
     
-    def on_add_server(self):
+    def on_add_server(self, checked=False, placement=None):
         """添加服务器"""
-        dialog = AddServerDialog(parent=self)
+        dialog = AddServerDialog(parent=self, placement=placement)
         
         if dialog.exec() == QDialog.DialogCode.Accepted:
             server_info = dialog.get_server_info()
             
-            exists = False
-            for i, s in enumerate(self.servers):
-                if s.get("id") == server_info.get("id"):
-                    self.servers[i] = server_info
-                    exists = True
-                    break
-            
-            if not exists:
-                self.servers.append(server_info)
-            
-            self.save_servers()
-            self.update_server_list()
+            if any(s.get('id') == server_info.get('id') for s in self.servers):
+                QMessageBox.warning(self, '设备已存在', '该主机、端口和用户名已存在，请编辑现有设备')
+                return
+            self.selected_device_id = server_info['id']
+            self.commit_inventory(self.servers + [server_info])
+
+    def add_at_position(self, rack_id, start):
+        self.on_add_server(placement=dict(rack_id=rack_id, rack_start_u=start))
+
+    def edit_rack(self, rack=None):
+        dialog = RackDialog(rack, self)
+        if dialog.exec() == QDialog.DialogCode.Accepted:
+            info = dialog.get_info()
+            racks = [info if r.get('id') == info['id'] else r for r in self.racks]
+            if not any(r.get('id') == info['id'] for r in self.racks):
+                racks.append(info)
+            self.commit_inventory(self.servers, racks)
+
+    def delete_rack(self, rack):
+        if any(s.get('rack_id') == rack.get('id') for s in self.servers):
+            QMessageBox.warning(self, '机柜非空', '请先迁移或下架机柜中的设备，再删除机柜')
+            return
+        if QMessageBox.question(self, '删除机柜', f'确定删除机柜 {rack.get("code")}？') == QMessageBox.StandardButton.Yes:
+            self.commit_inventory(self.servers, [r for r in self.racks if r.get('id') != rack.get('id')])
+
+    def on_rack_action(self, server, action):
+        if action == 'edit':
+            self.on_edit_server(server)
+        elif action == 'delete':
+            self.on_delete_server(server)
+        elif action == 'root':
+            self.on_switch_root(server)
+        elif action == 'connect':
+            self.on_server_connect(server)
+        elif action == 'report':
+            from PyQt6.QtGui import QDesktopServices
+            from PyQt6.QtCore import QUrl
+            path = self.inspection_history.get(server.get('id'), {}).get('report_path', '')
+            if not path or not Path(path).is_file():
+                QMessageBox.warning(self, '报告不存在', '报告尚未导出或文件已移动，请重新导出')
+                return
+            QDesktopServices.openUrl(QUrl.fromLocalFile(str(Path(path).resolve())))
+        else:
+            self.device_operation_requested.emit(server, action)
+
+    def set_device_state(self, server_id, state=''):
+        if server_id:
+            if state:
+                self.device_states[server_id] = state
+            else:
+                self.device_states.pop(server_id, None)
+        if self.rack_view:
+            self.rack_view.update_connected_status(self.connected_server_id, self.is_root)
     
     def set_connected_server(self, server_id: str = None, is_root: bool = False):
         """设置当前连接的服务器"""
@@ -1775,6 +1975,8 @@ class ProductPage(QWidget):
         # 更新所有分组的连接状态
         for section in self.product_sections:
             section.update_connected_status(self.connected_server_id, is_root)
+        if self.rack_view:
+            self.rack_view.update_connected_status(self.connected_server_id, is_root)
         
         # 显示/隐藏下一步按钮
         if self.connected_server_id:

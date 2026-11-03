@@ -20,6 +20,9 @@ import socket
 import json
 import os
 import subprocess
+from copy import deepcopy
+from uuid import uuid4
+from datetime import datetime
 from pathlib import Path
 from utils import get_config_dir, get_ai_config_path, normalize_ai_configs
 
@@ -874,6 +877,8 @@ class InspectionPage(QWidget):
     
     # 信号定义
     inspection_completed = pyqtSignal(dict)
+    inspection_started = pyqtSignal(dict)
+    report_saved = pyqtSignal(dict)
     export_report_clicked = pyqtSignal(dict)
     goto_ai_analysis = pyqtSignal(dict)
     
@@ -1419,6 +1424,10 @@ class InspectionPage(QWidget):
             is_md = file_path.endswith('.md')
             
             with open(file_path, 'w', encoding='utf-8') as f:
+                target = getattr(self, 'task_device', {})
+                if target:
+                    f.write(f'设备: {target.get("name", "")} ({target.get("host", "")}:{target.get("port", 22)})\n')
+                    f.write(f'任务标识: {getattr(self, "task_id", "")}\n\n')
                 if is_md:
                     f.write(f"# Linux SSH 巡检报告\n\n")
                     f.write(f"**产品:** {product_name}\n\n")
@@ -1446,6 +1455,7 @@ class InspectionPage(QWidget):
             
             MessageBox("成功", f"巡检报告已保存到:\n{file_path}", self)
             
+            self._report_saved(file_path)
             # 自动打开文件夹并选中文件
             real_path = os.path.realpath(file_path)
             folder = os.path.dirname(real_path)
@@ -1808,8 +1818,7 @@ class InspectionPage(QWidget):
 
         # 加载AI配置
         api_config = self._load_ai_config()
-        print(f"[DEBUG] API config: {api_config}")
-        _d("EXPORT", f"API config loaded: {api_config}")
+        _d("EXPORT", f"API config loaded: {bool(api_config)}")
         if not api_config:
             print("[DEBUG] api_config is None")
             _d("EXPORT", "api_config is None")
@@ -1827,6 +1836,8 @@ class InspectionPage(QWidget):
         timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
         formatted_data = f"产品: {product_name}\n"
+        target = getattr(self, 'task_device', {})
+        formatted_data += f'设备: {target.get("name", "")} ({target.get("host", "")})\n'
         formatted_data += f"检查时间: {timestamp}\n\n"
         formatted_data += "=== 原始巡检输出 ===\n"
         formatted_data += raw_output
@@ -1926,7 +1937,7 @@ class InspectionPage(QWidget):
             _d("EXPORT", f"User selected path: {file_path}")
             
             inspection_items = []
-            for item_data in self._get_checked_inspection_items():
+            for item_data in getattr(self, 'task_checks', None) or self._get_checked_inspection_items():
                 name = item_data.get('Name', item_data.get('name', '未知'))
                 output = self.builtin_outputs.get(name, self.custom_script_outputs.get(name, ''))
                 inspection_items.append({'name': name, 'status': classify_output(output), 'output': output})
@@ -1937,6 +1948,7 @@ class InspectionPage(QWidget):
             _d("EXPORT", f"Writing to file: {file_path}")
             with open(file_path, 'w', encoding='utf-8') as f:
                 f.write(html_content)
+            self._report_saved(file_path)
 
             _d("EXPORT", f"Report saved to: {file_path}")
             MessageBox("成功", f"报告已保存到:\n{file_path}", self).exec()
@@ -3053,6 +3065,9 @@ class InspectionPage(QWidget):
     def _generate_ai_report_html(self, ai_result: str, product: str, timestamp: str, inspection_items: list = None) -> str:
         import re
         from datetime import datetime
+        from html import escape
+        target = getattr(self, 'task_device', {})
+        target_meta = escape(f'{target.get("name") or ""} · {target.get("host") or ""}:{target.get("port", 22)}') if target else '未绑定设备'
         
         inspection_items = inspection_items or []
         total_items = len(inspection_items)
@@ -3700,6 +3715,7 @@ class InspectionPage(QWidget):
         <header class="hero">
             <h1>系统巡检报告</h1>
             <div class="meta">产品：{product}&nbsp;&nbsp;检查时间：{timestamp}</div>
+            <div class="meta">目标设备：{target_meta}</div>
         </header>
         <section class="panel">
             <div class="summary {overall_class}">
@@ -4300,6 +4316,20 @@ Network: 120 packets/s""",
         """设置 SSH 客户端"""
         self.ssh_client = ssh_client
 
+    def set_device(self, device):
+        """Clear results even when switching between devices of the same product."""
+        previous = getattr(self, 'current_device', {}).get('id')
+        if previous != device.get('id'):
+            self._clear_inspection_state()
+            self.task_device = {}
+            self.task_id = None
+            self.task_checks = []
+        self.current_device = deepcopy({k: device[k] for k in ('id', 'name', 'host', 'port', 'product') if k in device})
+
+    def _report_saved(self, path):
+        self.report_saved.emit(dict(device_id=getattr(self, 'task_device', {}).get('id'),
+                                   task_id=getattr(self, 'task_id', None), path=str(Path(path).resolve())))
+
     def _get_checked_inspection_items(self):
         checked_items = []
         for i in range(self.inspect_list.count()):
@@ -4336,6 +4366,8 @@ Network: 120 packets/s""",
 
     def start_inspection(self):
         """开始巡检"""
+        if (self.inspection_worker and self.inspection_worker.isRunning()) or (getattr(self, 'export_worker', None) and self.export_worker.isRunning()):
+            return
         # 从 inspect_list 获取用户选择的巡检项
         selected_items = self._get_checked_inspection_items()
         
@@ -4452,6 +4484,12 @@ Network: 120 packets/s""",
         self.progress_bar.setRange(0, 0)  # 不确定进度
         
         # 启动巡检线程
+        self.task_device = deepcopy(getattr(self, 'current_device', {}))
+        self.task_id = str(uuid4())
+        self.task_checks = deepcopy(all_scripts)
+        self.task_time = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        self._task_summary_emitted = False
+        self.inspection_started.emit(self.task_device)
         self.inspection_worker = InspectionWorker(self.ssh_client, all_scripts)
         self.inspection_worker.output_received.connect(self.on_all_output_received)
         self.inspection_worker.script_output.connect(self.on_script_output_received)
@@ -4644,13 +4682,21 @@ Network: 120 packets/s""",
          
         # 收集检查项的单独输出（无论成功还是停止都要发送）
         inspection_data = {
+            'device': deepcopy(getattr(self, 'task_device', {})),
+            'task_id': getattr(self, 'task_id', None),
+            'time': getattr(self, 'task_time', datetime.now().strftime('%Y-%m-%d %H:%M:%S')),
+            'message': message,
+            'success': success,
+            'checks': [s.get('Name', s.get('name', '')) for s in getattr(self, 'task_checks', [])],
             "output": self.output_text.toPlainText(),  # 原始总输出
             "script_outputs": {
                 "builtin": self.builtin_outputs,  # 内置检查项输出
                 "custom": self.custom_script_outputs  # 自定义脚本输出
             }
         }
-        self.inspection_completed.emit(inspection_data)
+        if not getattr(self, '_task_summary_emitted', False):
+            self._task_summary_emitted = True
+            self.inspection_completed.emit(inspection_data)
     
     def go_to_report_page(self):
         """跳转到报告导出页面"""

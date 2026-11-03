@@ -31,6 +31,7 @@ from .ai_config_page import AIConfigPage
 from .log_extract_page import LogExtractPage
 from .system_guard_page import SystemGuardPage
 from .connection_page import ConnectionWorker
+from .device_operations import DeviceOperationRouter
 from src.core.ssh_connector import SSHClientWrapper
 from src.scripts.loader import get_loader
 from scripts.inspection_catalog import get_builtin_checks, format_check_output, classify_output
@@ -396,6 +397,7 @@ class MainWindow(FluentWindow):
         self.connection_worker = None
         self.scheduled_worker = None
         self.pending_server = None
+        self.operation_router = DeviceOperationRouter()
         self.ssh_client = None
         self._force_quit = False
         self.tray_icon = None
@@ -453,6 +455,10 @@ class MainWindow(FluentWindow):
         self.product_page.schedules_updated.connect(self.reload_scheduled_inspections)
         self.system_guard_page.schedules_updated.connect(self.reload_scheduled_inspections)
         self.product_page.go_to_next_step.connect(self.on_go_to_next_step)
+        self.product_page.device_operation_requested.connect(self.on_device_operation)
+        self.inspection_page.inspection_completed.connect(self.on_device_inspection_completed)
+        self.inspection_page.report_saved.connect(self.on_device_report_saved)
+        self.inspection_page.inspection_started.connect(self.on_device_inspection_started)
         
         # 初始化窗口
         self.init_navigation()
@@ -779,9 +785,66 @@ class MainWindow(FluentWindow):
         # 由于NavigationInterface没有setItemEnable方法，使用switch_page的限制来实现
         pass
     
+    def _has_active_device_task(self):
+        for page, names in [(self.inspection_page, ('inspection_worker', 'export_worker')),
+                            (self.ai_troubleshoot_page, ('ai_worker',)),
+                            (self.log_extract_page, ('worker',))]:
+            for name in names:
+                worker = getattr(page, name, None)
+                if worker and worker.isRunning():
+                    return True
+        return False
+
     def on_server_immediate_connect(self, server: dict, password: str):
+        self.on_device_operation(server, 'connect', password)
+
+    def on_device_operation(self, server, action, password=None):
+        if action not in ('connect', 'inspection', 'troubleshoot', 'logs', 'monitor'):
+            return
+        alive = self.is_connected and self.ssh_client and getattr(self.ssh_client, 'is_connected', False)
+        current = self.product_page.connected_server_id if alive else None
+        def confirm():
+            old = next((s for s in self.product_page.servers if s.get('id') == current), {})
+            return QMessageBox.question(self, '切换连接设备',
+                f'当前连接：{old.get("name") or old.get("host") or current}\n'
+                f'将断开当前连接，连接：{server.get("name") or server.get("host")} ({server.get("host", "")})\n是否继续？'
+            ) == QMessageBox.StandardButton.Yes
+        busy = self._has_active_device_task() or bool(self.connection_worker and self.connection_worker.isRunning())
+        route, token = self.operation_router.request(server, action, current, busy, confirm)
+        if route == 'blocked':
+            QMessageBox.warning(self, '操作进行中', '请等待连接或运维任务完成，也可先停止当前任务')
+            return
+        if route == 'cancelled':
+            return
+        if route == 'ready':
+            self._execute_device_action(server, action)
+            return
+        password = password if password is not None else decrypt_password(server.get('encrypted_password', ''))
+        if not password:
+            self.operation_router.complete(token, False, None)
+            QMessageBox.warning(self, '连接失败', '无法获取保存的密码，请重新编辑设备')
+            return
+        if self.ssh_client:
+            self.disconnect_and_go_home(allow_pending=True)
+        self._start_device_connection(dict(server), password, token)
+
+    def _execute_device_action(self, server, action):
+        if self.product_page.connected_server_id != server.get('id') or not self.is_connected:
+            return
+        if action == 'inspection':
+            self.switch_page(2)
+            self.inspection_page.start_inspection()
+        elif action == 'troubleshoot':
+            self.switch_page(3)
+        elif action == 'logs':
+            self.switch_page(5)
+        elif action == 'monitor':
+            self.product_page.on_monitor_server(server)
+
+    def _start_device_connection(self, server: dict, password: str, token):
         """立即连接服务器（不需要跳转页面）"""
         self.pending_server = server
+        self.product_page.set_device_state(server['id'], '连接中')
         host = server.get("host", "")
         port = server.get("port", 22)
         username = server.get("username", "")
@@ -799,9 +862,37 @@ class MainWindow(FluentWindow):
         }
         
         self.connection_worker = ConnectionWorker(connection_params, use_otp=use_otp)
-        self.connection_worker.connection_result.connect(self.on_connection_result)
+        self.connection_worker.connection_result.connect(
+            lambda success, message, info, t=token: self._on_device_connection_result(t, success, message, info))
         self.connection_worker.otp_challenge.connect(self.on_otp_challenge)
         self.connection_worker.start()
+
+    def _on_device_connection_result(self, token, success, message, info):
+        if not self.operation_router.matches(token):
+            client = info.get('ssh_client')
+            if client and client is not self.ssh_client:
+                client.disconnect()
+            return
+        server = self.operation_router.pending[1]
+        asset = next((s for s in self.product_page.servers if s.get('id') == server.get('id')), None)
+        if success and (asset is None or any(asset.get(k) != server.get(k) for k in ('host', 'port', 'username', 'product'))):
+            client = info.get('ssh_client')
+            if client:
+                client.disconnect()
+            success, message = False, '目标设备已被修改或删除，请重新选择设备后连接'
+        if success and any(info.get(k) is not None and str(info[k]) != str(server.get(k, 22 if k == 'port' else ''))
+                           for k in ('host', 'port', 'username')):
+            client = info.get('ssh_client')
+            if client:
+                client.disconnect()
+            success, message = False, '连接返回的设备身份与目标不一致，请重新连接'
+        self.product_page.set_device_state(server['id'], '' if success else '连接失败')
+        self.on_connection_result(success, message, info)
+        next_action = self.operation_router.complete(token, success, self.product_page.connected_server_id)
+        if next_action:
+            target, action = next_action
+            # Keep the target snapshot in the queued callback; never consult a selected card.
+            QTimer.singleShot(0, lambda s=target, a=action: self._execute_device_action(s, a))
     
     def on_otp_challenge(self, challenge_text: str):
         """处理OTP挑战"""
@@ -863,6 +954,7 @@ class MainWindow(FluentWindow):
             
             # 设置 SSH 客户端到巡检页面
             self.inspection_page.set_ssh_client(self.ssh_client)
+            self.inspection_page.set_device(self.pending_server or {})
             self.inspection_page.set_product(product_name)
             self.log_extract_page.set_ssh_client(self.ssh_client)
             self.log_extract_page.set_product(product_name)
@@ -912,12 +1004,19 @@ class MainWindow(FluentWindow):
     
     def on_server_switch_root_request(self, server: dict):
         """处理切换root请求（从列表按钮触发）"""
-        if self.product_page.is_root:
+        if self.product_page.is_root or server.get('id') != self.product_page.connected_server_id:
+            return
+        if self._has_active_device_task() or self.operation_router.pending:
+            QMessageBox.warning(self, '操作进行中', '请等待连接或运维任务结束后再切换 root')
             return
         self.after_connect_switch_root()
     
-    def disconnect_and_go_home(self):
+    def disconnect_and_go_home(self, allow_pending=False):
         """断开连接并返回服务器管理页"""
+        if self._has_active_device_task() or (self.operation_router.pending and not allow_pending):
+            QMessageBox.warning(self, '操作进行中', '请等待运维任务完成或停止后，再断开连接')
+            return False
+        old_id = self.product_page.connected_server_id
         if self.ssh_client:
             try:
                 self.ssh_client.disconnect()
@@ -953,17 +1052,59 @@ class MainWindow(FluentWindow):
         
         # 重置产品页面的连接状态
         self.product_page.set_connected_server(None)
+        self.product_page.set_device_state(old_id, '')
         
         # 重置所有页面的当前产品
         self.selected_product = None
         self.selected_product_name = ""
         self.selected_product_id = ""
         self.inspection_page.set_product("")
+        self.inspection_page.set_ssh_client(None)
+        self.inspection_page.set_device({})
+        self.ai_troubleshoot_page.set_ssh_client(None, '')
         self.log_extract_page.set_ssh_client(None)
         self.log_extract_page.set_product("")
         
         # 返回服务器管理页
         self.switch_page(0)
+        return True
+
+    def on_device_inspection_started(self, device):
+        self.product_page.set_device_state(device.get('id'), '巡检中')
+
+    def on_device_inspection_completed(self, data):
+        device = data.get('device', {})
+        if not device.get('id'):
+            return
+        from collections import Counter
+        counts = Counter()
+        for section in data.get('script_outputs', {}).values():
+            for output in section.values():
+                counts[classify_output(output)] += 1
+        completed_names = {name for section in data.get('script_outputs', {}).values() for name in section}
+        counts['unknown'] += len(set(data.get('checks', [])) - completed_names)
+        summary = dict(time=data.get('time', datetime.now().strftime('%Y-%m-%d %H:%M:%S')),
+                       task_id=data.get('task_id'), counts=dict(counts), message=data.get('message', ''),
+                       device_name=device.get('name') or device.get('host'), host=device.get('host'))
+        self.product_page.inspection_history[device['id']] = summary
+        self.product_page.set_device_state(device['id'], '')
+        self._save_device_history()
+
+    def on_device_report_saved(self, data):
+        summary = self.product_page.inspection_history.get(data.get('device_id'))
+        if summary and summary.get('task_id') == data.get('task_id'):
+            summary['report_path'] = data['path']
+            self._save_device_history()
+            if self.product_page.rack_view:
+                self.product_page.rack_view.update_connected_status(self.product_page.connected_server_id, self.is_root)
+
+    def _save_device_history(self):
+        from core.rack_inventory import atomic_json_write
+        try:
+            atomic_json_write(self.product_page.inventory_store().path.parent / 'inspection_history.json',
+                              self.product_page.inspection_history)
+        except OSError as error:
+            QMessageBox.warning(self, '历史保存失败', f'巡检结果不受影响，无法保存历史摘要：{error}')
     
     def on_go_to_next_step(self):
         """处理首页下一步按钮点击"""
