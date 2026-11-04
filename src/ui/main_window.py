@@ -413,6 +413,11 @@ class MainWindow(FluentWindow):
         self.home_page = HomePage()
         self.product_page = ProductPage()
         self.inspection_page = InspectionPage()
+        self.device_inspection_page = InspectionPage()
+        self.device_inspection_page.setParent(self.product_page)
+        self.device_inspection_page.hide()
+        self.device_inspection_page.findChild(QLabel, 'pageTitle').hide()
+        self.device_inspection_page.product_label.hide()
         self.system_guard_page = SystemGuardPage()
         self.log_extract_page = LogExtractPage()
         self.ai_troubleshoot_page = AITroubleshootPage()
@@ -456,9 +461,12 @@ class MainWindow(FluentWindow):
         self.system_guard_page.schedules_updated.connect(self.reload_scheduled_inspections)
         self.product_page.go_to_next_step.connect(self.on_go_to_next_step)
         self.product_page.device_operation_requested.connect(self.on_device_operation)
-        self.inspection_page.inspection_completed.connect(self.on_device_inspection_completed)
-        self.inspection_page.report_saved.connect(self.on_device_report_saved)
-        self.inspection_page.inspection_started.connect(self.on_device_inspection_started)
+        self.product_page.resume_inspection_requested.connect(self.resume_device_inspection)
+        for page in (self.inspection_page, self.device_inspection_page):
+            page.inspection_completed.connect(self.on_device_inspection_completed)
+            page.report_saved.connect(self.on_device_report_saved)
+            page.inspection_started.connect(self.on_device_inspection_started)
+            page.start_guard = lambda: not self._has_active_device_task()
         
         # 初始化窗口
         self.init_navigation()
@@ -787,6 +795,7 @@ class MainWindow(FluentWindow):
     
     def _has_active_device_task(self):
         for page, names in [(self.inspection_page, ('inspection_worker', 'export_worker')),
+                            (self.device_inspection_page, ('inspection_worker', 'export_worker')),
                             (self.ai_troubleshoot_page, ('ai_worker',)),
                             (self.log_extract_page, ('worker',))]:
             for name in names:
@@ -800,6 +809,13 @@ class MainWindow(FluentWindow):
 
     def on_device_operation(self, server, action, password=None):
         if action not in ('connect', 'inspection', 'troubleshoot', 'logs', 'monitor'):
+            return
+        inline_busy = any(getattr(self.device_inspection_page, name, None) and getattr(self.device_inspection_page, name).isRunning()
+                          for name in ('inspection_worker', 'export_worker'))
+        if (action == 'inspection' and inline_busy
+                and getattr(self.device_inspection_page, 'task_device', {}).get('id') == server.get('id')
+                and self.product_page.connected_server_id == server.get('id')):
+            self.product_page.show_device_inspection(self.device_inspection_page, server)
             return
         alive = self.is_connected and self.ssh_client and getattr(self.ssh_client, 'is_connected', False)
         current = self.product_page.connected_server_id if alive else None
@@ -832,8 +848,15 @@ class MainWindow(FluentWindow):
         if self.product_page.connected_server_id != server.get('id') or not self.is_connected:
             return
         if action == 'inspection':
-            self.switch_page(2)
-            self.inspection_page.start_inspection()
+            if self.stackedWidget.currentWidget() is not self.product_page:
+                self.switch_page(1)
+            page = self.device_inspection_page
+            page.set_ssh_client(self.ssh_client)
+            if getattr(page, 'current_device', {}).get('id') != server.get('id'):
+                page.set_device(server)
+                page.set_product(server.get('product', ''))
+            self.product_page.show_device_inspection(page, server)
+            page.start_inspection()
         elif action == 'troubleshoot':
             self.switch_page(3)
         elif action == 'logs':
@@ -956,6 +979,9 @@ class MainWindow(FluentWindow):
             self.inspection_page.set_ssh_client(self.ssh_client)
             self.inspection_page.set_device(self.pending_server or {})
             self.inspection_page.set_product(product_name)
+            self.device_inspection_page.set_ssh_client(self.ssh_client)
+            self.device_inspection_page.set_device(self.pending_server or {})
+            self.device_inspection_page.set_product(product_name)
             self.log_extract_page.set_ssh_client(self.ssh_client)
             self.log_extract_page.set_product(product_name)
             
@@ -1061,16 +1087,23 @@ class MainWindow(FluentWindow):
         self.inspection_page.set_product("")
         self.inspection_page.set_ssh_client(None)
         self.inspection_page.set_device({})
+        self.device_inspection_page.set_ssh_client(None)
+        self.device_inspection_page.set_device({})
+        self.device_inspection_page.set_product('')
+        self.product_page.close_device_inspection()
+        self.product_page.resume_inspection_btn.hide()
         self.ai_troubleshoot_page.set_ssh_client(None, '')
         self.log_extract_page.set_ssh_client(None)
         self.log_extract_page.set_product("")
         
         # 返回服务器管理页
-        self.switch_page(0)
+        if not allow_pending:
+            self.switch_page(0)
         return True
 
     def on_device_inspection_started(self, device):
         self.product_page.set_device_state(device.get('id'), '巡检中')
+        self.product_page.resume_inspection_btn.setText('查看巡检进度')
 
     def on_device_inspection_completed(self, data):
         device = data.get('device', {})
@@ -1088,6 +1121,7 @@ class MainWindow(FluentWindow):
                        device_name=device.get('name') or device.get('host'), host=device.get('host'))
         self.product_page.inspection_history[device['id']] = summary
         self.product_page.set_device_state(device['id'], '')
+        self.product_page.resume_inspection_btn.setText('查看巡检结果')
         self._save_device_history()
 
     def on_device_report_saved(self, data):
@@ -1108,7 +1142,14 @@ class MainWindow(FluentWindow):
     
     def on_go_to_next_step(self):
         """处理首页下一步按钮点击"""
-        self.switch_page(2)  # 一键巡检在索引2
+        server = next((s for s in self.product_page.servers if s.get('id') == self.product_page.connected_server_id), None)
+        if server:
+            self.on_device_operation(server, 'inspection')
+
+    def resume_device_inspection(self):
+        server = getattr(self.device_inspection_page, 'current_device', {})
+        if server.get('id') == self.product_page.connected_server_id and self.is_connected:
+            self.product_page.show_device_inspection(self.device_inspection_page, server)
     
     def on_inspection_items_confirmed(self, inspection_config: dict):
         """巡检项确认处理"""

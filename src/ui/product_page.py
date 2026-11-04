@@ -1594,6 +1594,7 @@ class ProductPage(QWidget):
     schedules_updated = pyqtSignal()
     go_to_next_step = pyqtSignal()  # 下一步按钮点击信号
     device_operation_requested = pyqtSignal(dict, str)
+    resume_inspection_requested = pyqtSignal()
 
     def __init__(self):
         """初始化产品选择页面"""
@@ -1611,6 +1612,8 @@ class ProductPage(QWidget):
         self.drag_active = False
         self.inspection_history = {}
         self.inventory_error = ''
+        self.inline_inspection = None
+        self.inspection_active = False
         self.product_sections = []
         self.init_ui()
         self.load_servers()
@@ -1705,6 +1708,7 @@ class ProductPage(QWidget):
         layout.addLayout(title_layout)
 
         filter_panel = QFrame()
+        self.filter_panel = filter_panel
         filter_panel.setObjectName('deviceFilterPanel')
         filter_row = QHBoxLayout(filter_panel)
         filter_row.setContentsMargins(10, 8, 10, 8)
@@ -1759,6 +1763,11 @@ class ProductPage(QWidget):
         footer_layout.addWidget(self.stats_label)
         
         footer_layout.addStretch()
+        self.resume_inspection_btn = QPushButton('查看巡检')
+        self.resume_inspection_btn.setMinimumHeight(32)
+        self.resume_inspection_btn.hide()
+        self.resume_inspection_btn.clicked.connect(self.resume_inspection_requested)
+        footer_layout.addWidget(self.resume_inspection_btn)
         
         # 下一步按钮（连接成功后可见）
         self.next_step_btn = PrimaryPushButton("进入巡检")
@@ -1772,6 +1781,49 @@ class ProductPage(QWidget):
         layout.addLayout(footer_layout)
 
         self.apply_styles()
+
+    def show_device_inspection(self, inspection_page, server):
+        if self.inline_inspection is None:
+            self.inline_inspection = QFrame(self)
+            self.inline_inspection.setObjectName('inlineInspection')
+            self.inline_inspection.setStyleSheet('QFrame#inlineInspection {background:white; border:1px solid #e0e8ed; border-radius:9px;}')
+            panel_layout = QVBoxLayout(self.inline_inspection)
+            panel_layout.setContentsMargins(12, 12, 12, 8)
+            header = QHBoxLayout()
+            back = QPushButton('← 返回机柜')
+            back.setMinimumHeight(32)
+            back.clicked.connect(self.close_device_inspection)
+            header.addWidget(back)
+            self.inspection_context = QLabel()
+            self.inspection_context.setTextFormat(Qt.TextFormat.PlainText)
+            self.inspection_context.setStyleSheet('font-size:13px; font-weight:600; color:#355968;')
+            header.addWidget(self.inspection_context, 1)
+            panel_layout.addLayout(header)
+            panel_layout.addWidget(inspection_page, 1)
+            self.layout().insertWidget(2, self.inline_inspection, 1)
+        self.inspection_context.setText(f'{server.get("name") or "设备巡检"} · {server.get("host", "")}')
+        self.filter_panel.hide()
+        self.scroll_area.hide()
+        self.add_rack_btn.hide()
+        self.add_server_btn.hide()
+        self.next_step_btn.hide()
+        self.stats_label.hide()
+        self.resume_inspection_btn.hide()
+        inspection_page.show()
+        self.inline_inspection.show()
+        self.inspection_active = True
+
+    def close_device_inspection(self):
+        if self.inline_inspection:
+            self.inline_inspection.hide()
+        self.inspection_active = False
+        self.filter_panel.show()
+        self.scroll_area.show()
+        self.add_rack_btn.show()
+        self.add_server_btn.show()
+        self.stats_label.show()
+        self.next_step_btn.setVisible(bool(self.connected_server_id))
+        self.resume_inspection_btn.setVisible(bool(self.connected_server_id and self.inline_inspection))
 
     def toggle_view(self):
         """切换视图模式"""
@@ -2071,7 +2123,7 @@ class ProductPage(QWidget):
             self.rack_view.update_connected_status(self.connected_server_id, is_root)
         
         # 显示/隐藏下一步按钮
-        if self.connected_server_id:
+        if self.connected_server_id and not self.inspection_active:
             self.next_step_btn.setVisible(True)
         else:
             self.next_step_btn.setVisible(False)

@@ -54,9 +54,9 @@ def test_ready_action_runs_on_current_device_only(window, monkeypatch):
     window.product_page.set_connected_server('B')
     calls = []
     monkeypatch.setattr(window, 'switch_page', lambda idx: calls.append(idx))
-    monkeypatch.setattr(window.inspection_page, 'start_inspection', lambda: calls.append('start'))
+    monkeypatch.setattr(window.device_inspection_page, 'start_inspection', lambda: calls.append('start'))
     window.on_device_operation(dict(id='B'), 'inspection')
-    assert calls == [2, 'start']
+    assert calls == [1, 'start']
 
 
 def test_other_device_never_runs_before_connecting(window, monkeypatch):
@@ -66,7 +66,7 @@ def test_other_device_never_runs_before_connecting(window, monkeypatch):
     calls = []
     monkeypatch.setattr(QMessageBox, 'question', lambda *a: QMessageBox.StandardButton.Yes)
     monkeypatch.setattr(window, '_start_device_connection', lambda s, p, t: calls.append(('connect', s['id'])))
-    monkeypatch.setattr(window.inspection_page, 'start_inspection', lambda: calls.append('start'))
+    monkeypatch.setattr(window.device_inspection_page, 'start_inspection', lambda: calls.append('start'))
     monkeypatch.setattr('ui.main_window.decrypt_password', lambda x: 'secret')
     window.on_device_operation(dict(id='B', host='192.0.2.2'), 'inspection')
     assert calls == [('connect', 'B')]
@@ -96,7 +96,7 @@ def test_connection_callback_starts_only_the_frozen_target(window, monkeypatch, 
     target = dict(id='B', host='192.0.2.2', username='root', product='EDR', port=22)
     window.product_page.servers = [dict(target)]
     started = []
-    monkeypatch.setattr(window.inspection_page, 'start_inspection', lambda: started.append(window.product_page.connected_server_id))
+    monkeypatch.setattr(window.device_inspection_page, 'start_inspection', lambda: started.append(window.product_page.connected_server_id))
     window.on_device_operation(target, 'inspection')
     token = window.operation_router.pending[0]
     window.product_page.selected_device_id = 'A'
@@ -112,7 +112,7 @@ def test_connection_callback_starts_only_the_frozen_target(window, monkeypatch, 
 
 def test_connection_failure_and_stale_results_never_start(window, monkeypatch):
     started, closed = [], []
-    monkeypatch.setattr(window.inspection_page, 'start_inspection', lambda: started.append(True))
+    monkeypatch.setattr(window.device_inspection_page, 'start_inspection', lambda: started.append(True))
     _, token = window.operation_router.request(dict(id='B'), 'inspection', None)
     window._on_device_connection_result(token, False, 'denied', {})
     assert not window.operation_router.pending and not started

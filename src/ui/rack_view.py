@@ -667,6 +667,8 @@ class RackView(QWidget):
         for index, (label, action) in enumerate([('一键巡检', 'inspection'), ('AI 排障', 'troubleshoot'),
                                                 ('日志收集', 'logs'), ('实时监控', 'monitor'),
                                                 ('调整位置 / 下架', 'edit'), ('最近报告', 'report')]):
+            if action == 'inspection' and state == '巡检中':
+                label = '查看巡检进度'
             button = QPushButton(label)
             button.setFixedHeight(36 if index < 4 else 30)
             button.setObjectName('rackAction_' + action)

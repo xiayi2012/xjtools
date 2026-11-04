@@ -74,7 +74,13 @@ def test_inspection_and_troubleshooting_order_and_routes(qtbot, monkeypatch, tmp
         qtbot.waitUntil(lambda: window.stackedWidget.currentWidget() is window.inspection_page)
         window.home_page.troubleshoot_clicked.emit()
         qtbot.waitUntil(lambda: window.stackedWidget.currentWidget() is window.ai_troubleshoot_page)
+        server = dict(id='B', host='192.0.2.2')
+        window.product_page.servers = [server]
+        window.product_page.set_connected_server('B')
+        from types import SimpleNamespace
+        window.ssh_client = SimpleNamespace(is_connected=True)
+        monkeypatch.setattr(window.device_inspection_page, 'start_inspection', lambda: None)
         window.on_go_to_next_step()
-        qtbot.waitUntil(lambda: window.stackedWidget.currentWidget() is window.inspection_page)
+        qtbot.waitUntil(lambda: window.stackedWidget.currentWidget() is window.product_page)
     finally:
         window._force_quit = True

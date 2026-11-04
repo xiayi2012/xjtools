@@ -4368,6 +4368,9 @@ Network: 120 packets/s""",
         """开始巡检"""
         if (self.inspection_worker and self.inspection_worker.isRunning()) or (getattr(self, 'export_worker', None) and self.export_worker.isRunning()):
             return
+        if getattr(self, 'start_guard', None) and not self.start_guard():
+            MessageBox('巡检任务进行中', '请先等待当前运维任务完成或停止后，再开始新的巡检。', self).exec()
+            return
         # 从 inspect_list 获取用户选择的巡检项
         selected_items = self._get_checked_inspection_items()
         
@@ -4434,8 +4437,6 @@ Network: 120 packets/s""",
                 output = test_result[1] if len(test_result) > 1 else ""
                 error = test_result[2] if len(test_result) > 2 else ""
                 
-                self.output_text.append(f"[DEBUG] 测试命令返回码: {exit_code}")
-                self.output_text.append(f"[DEBUG] 测试命令输出: {repr(output[:100] if output else '')}")
                 
                 if exit_code == 0:
                     self.output_text.append("✓ SSH连接正常")
