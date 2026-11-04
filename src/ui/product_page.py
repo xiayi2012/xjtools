@@ -1784,46 +1784,41 @@ class ProductPage(QWidget):
 
     def show_device_inspection(self, inspection_page, server):
         if self.inline_inspection is None:
-            self.inline_inspection = QFrame(self)
-            self.inline_inspection.setObjectName('inlineInspection')
-            self.inline_inspection.setStyleSheet('QFrame#inlineInspection {background:white; border:1px solid #e0e8ed; border-radius:9px;}')
-            panel_layout = QVBoxLayout(self.inline_inspection)
+            self.inspection_dialog = QDialog(self)
+            self.inline_inspection = self.inspection_dialog
+            self.inspection_dialog.setMinimumSize(900, 600)
+            self.inspection_dialog.resize(1080, 720)
+            panel_layout = QVBoxLayout(self.inspection_dialog)
             panel_layout.setContentsMargins(12, 12, 12, 8)
             header = QHBoxLayout()
-            back = QPushButton('← 返回机柜')
-            back.setMinimumHeight(32)
-            back.clicked.connect(self.close_device_inspection)
-            header.addWidget(back)
             self.inspection_context = QLabel()
             self.inspection_context.setTextFormat(Qt.TextFormat.PlainText)
-            self.inspection_context.setStyleSheet('font-size:13px; font-weight:600; color:#355968;')
+            self.inspection_context.setStyleSheet('font-size:14px; font-weight:600; color:#355968;')
             header.addWidget(self.inspection_context, 1)
+            hide_button = QPushButton('收起窗口')
+            hide_button.clicked.connect(self.close_device_inspection)
+            header.addWidget(hide_button)
             panel_layout.addLayout(header)
             panel_layout.addWidget(inspection_page, 1)
-            self.layout().insertWidget(2, self.inline_inspection, 1)
-        self.inspection_context.setText(f'{server.get("name") or "设备巡检"} · {server.get("host", "")}')
-        self.filter_panel.hide()
-        self.scroll_area.hide()
-        self.add_rack_btn.hide()
-        self.add_server_btn.hide()
-        self.next_step_btn.hide()
-        self.stats_label.hide()
+            self.inspection_dialog.finished.connect(self._inspection_hidden)
+        title = f'一键巡检 · {server.get("name") or "设备"} · {server.get("host", "")}'
+        self.inspection_dialog.setWindowTitle(title)
+        self.inspection_context.setText(title)
+        self.inspection_active = True
         self.resume_inspection_btn.hide()
         inspection_page.show()
-        self.inline_inspection.show()
-        self.inspection_active = True
+        self.inspection_dialog.show()
+        self.inspection_dialog.raise_()
+        self.inspection_dialog.activateWindow()
+
+    def _inspection_hidden(self, *args):
+        self.inspection_active = False
+        self.resume_inspection_btn.setVisible(bool(self.connected_server_id))
 
     def close_device_inspection(self):
         if self.inline_inspection:
             self.inline_inspection.hide()
-        self.inspection_active = False
-        self.filter_panel.show()
-        self.scroll_area.show()
-        self.add_rack_btn.show()
-        self.add_server_btn.show()
-        self.stats_label.show()
-        self.next_step_btn.setVisible(bool(self.connected_server_id))
-        self.resume_inspection_btn.setVisible(bool(self.connected_server_id and self.inline_inspection))
+        self._inspection_hidden()
 
     def toggle_view(self):
         """切换视图模式"""
@@ -1872,7 +1867,7 @@ class ProductPage(QWidget):
         return True
 
     def drag_device(self, server_id):
-        if self.inventory_error or self.device_states.get(server_id) in ('连接中', '巡检中'):
+        if self.inventory_error or self.device_states.get(server_id) in ('连接中', '等待巡检', '巡检中'):
             return None
         return next((s for s in self.servers if s.get('id') == server_id), None)
 
@@ -2015,7 +2010,7 @@ class ProductPage(QWidget):
     
     def on_edit_server(self, server: dict):
         """编辑服务器"""
-        if self.device_states.get(server.get('id')) in ('连接中', '巡检中'):
+        if self.device_states.get(server.get('id')) in ('连接中', '等待巡检', '巡检中'):
             QMessageBox.warning(self, '设备操作中', '请等待该设备的连接或巡检结束后再编辑')
             return
         dialog = AddServerDialog(server, parent=self)
@@ -2023,7 +2018,7 @@ class ProductPage(QWidget):
         if dialog.exec() == QDialog.DialogCode.Accepted:
             server_info = dialog.get_server_info()
             
-            if self.device_states.get(server.get('id')) in ('连接中', '巡检中'):
+            if self.device_states.get(server.get('id')) in ('连接中', '等待巡检', '巡检中'):
                 QMessageBox.warning(self, '设备操作中', '该设备正在连接或巡检，请稍后重新编辑')
                 return
             if server.get('id') == self.connected_server_id and any(server_info.get(k) != server.get(k) for k in ('host', 'port', 'username', 'product')):
@@ -2034,7 +2029,7 @@ class ProductPage(QWidget):
     def on_delete_server(self, server: dict):
         """删除服务器"""
         from qfluentwidgets import MessageBox
-        if self.device_states.get(server.get('id')) in ('连接中', '巡检中'):
+        if self.device_states.get(server.get('id')) in ('连接中', '等待巡检', '巡检中'):
             QMessageBox.warning(self, '设备操作中', '请等待该设备的连接或巡检结束后再删除')
             return
         if server.get('id') == self.connected_server_id:

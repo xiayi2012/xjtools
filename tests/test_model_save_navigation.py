@@ -64,8 +64,8 @@ def test_inspection_and_troubleshooting_order_and_routes(qtbot, monkeypatch, tmp
     try:
         assert window.stackedWidget.widget(2) is window.inspection_page
         assert window.stackedWidget.widget(3) is window.ai_troubleshoot_page
-        assert window.navigationInterface.widget('inspection_page').text() == '一键巡检'
-        assert window.inspection_page.findChild(QLabel, 'pageTitle').text() == '一键巡检'
+        assert window.navigationInterface.widget('inspection_page').text() == '批量巡检'
+        assert window.inspection_page.findChild(QLabel, 'pageTitle').text() == '批量巡检'
         left = window.home_page.findChild(QPushButton, 'troubleshootButton')
         right = window.home_page.findChild(QPushButton, 'inspectButton')
         assert left.mapTo(window.home_page, QPoint()).x() < right.mapTo(window.home_page, QPoint()).x()

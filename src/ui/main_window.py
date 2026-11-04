@@ -26,6 +26,7 @@ from qfluentwidgets import FluentIcon as FIF
 from .product_page import ProductPage
 from .home_page import HomePage
 from .inspection_page import InspectionPage, ExportReportWorker
+from .batch_inspection_page import BatchInspectionPage
 from .ai_troubleshoot_page import AITroubleshootPage
 from .ai_config_page import AIConfigPage
 from .log_extract_page import LogExtractPage
@@ -412,7 +413,7 @@ class MainWindow(FluentWindow):
         # 创建各个页面
         self.home_page = HomePage()
         self.product_page = ProductPage()
-        self.inspection_page = InspectionPage()
+        self.inspection_page = BatchInspectionPage(lambda: self.product_page.servers)
         self.device_inspection_page = InspectionPage()
         self.device_inspection_page.setParent(self.product_page)
         self.device_inspection_page.hide()
@@ -435,7 +436,7 @@ class MainWindow(FluentWindow):
         # 添加子界面到导航
         self.addSubInterface(self.home_page, FIF.HOME, "首页")
         self.addSubInterface(self.product_page, FIF.IOT, "设备管理")
-        self.addSubInterface(self.inspection_page, FIF.PLAY, "一键巡检")
+        self.addSubInterface(self.inspection_page, FIF.PLAY, "批量巡检")
         self.addSubInterface(self.ai_troubleshoot_page, FIF.CHAT, "AI 排障")
         self.addSubInterface(self.system_guard_page, FIF.CALENDAR, "定时巡检")
         self.addSubInterface(self.log_extract_page, FIF.DOCUMENT, "日志收集")
@@ -462,11 +463,13 @@ class MainWindow(FluentWindow):
         self.product_page.go_to_next_step.connect(self.on_go_to_next_step)
         self.product_page.device_operation_requested.connect(self.on_device_operation)
         self.product_page.resume_inspection_requested.connect(self.resume_device_inspection)
+        self.inspection_page.targets_queued.connect(self.on_batch_targets_queued)
+        self.inspection_page.device_released.connect(lambda device_id: self.product_page.set_device_state(device_id, ''))
         for page in (self.inspection_page, self.device_inspection_page):
             page.inspection_completed.connect(self.on_device_inspection_completed)
             page.report_saved.connect(self.on_device_report_saved)
             page.inspection_started.connect(self.on_device_inspection_started)
-            page.start_guard = lambda: not self._has_active_device_task()
+            page.start_guard = lambda: not self._has_active_device_task() and not self.operation_router.pending
         
         # 初始化窗口
         self.init_navigation()
@@ -512,6 +515,9 @@ class MainWindow(FluentWindow):
         self.activateWindow()
 
     def exit_from_tray(self):
+        if self._has_active_device_task():
+            QMessageBox.warning(self, '任务仍在运行', '请先停止正在运行的巡检或运维任务，再退出程序。')
+            return
         self._force_quit = True
         if self.tray_icon:
             self.tray_icon.hide()
@@ -757,7 +763,9 @@ class MainWindow(FluentWindow):
         """页面切换拦截 - 未连接时阻止访问受限页面"""
         # 页面索引: 0=首页, 1=设备管理, 2=一键巡检, 3=AI排障, 4=定时巡检, 5=日志收集, 6=大模型配置
         # 首页、设备管理、定时巡检、大模型配置不需要连接，AI排障/AI巡检/日志收集需要连接
-        if not self.is_connected and index in (2, 3, 5):
+        if index == 2:
+            self.inspection_page.refresh_devices()
+        if not self.is_connected and index in (3, 5):
             from qfluentwidgets import MessageBox
             MessageBox("提示", "请先连接服务器", self).exec()
             # 切换回设备管理页
@@ -777,7 +785,7 @@ class MainWindow(FluentWindow):
         ]
         
         # 检查页面是否可访问（未连接时不能访问AI排障、AI巡检和日志收集）
-        if not force and not self.is_connected and index in (2, 3, 5):
+        if not force and not self.is_connected and index in (3, 5):
             from qfluentwidgets import MessageBox
             MessageBox("提示", "请先连接服务器", self).exec()
             return
@@ -976,9 +984,6 @@ class MainWindow(FluentWindow):
             self.selected_product_name = product_name
             
             # 设置 SSH 客户端到巡检页面
-            self.inspection_page.set_ssh_client(self.ssh_client)
-            self.inspection_page.set_device(self.pending_server or {})
-            self.inspection_page.set_product(product_name)
             self.device_inspection_page.set_ssh_client(self.ssh_client)
             self.device_inspection_page.set_device(self.pending_server or {})
             self.device_inspection_page.set_product(product_name)
@@ -1084,9 +1089,6 @@ class MainWindow(FluentWindow):
         self.selected_product = None
         self.selected_product_name = ""
         self.selected_product_id = ""
-        self.inspection_page.set_product("")
-        self.inspection_page.set_ssh_client(None)
-        self.inspection_page.set_device({})
         self.device_inspection_page.set_ssh_client(None)
         self.device_inspection_page.set_device({})
         self.device_inspection_page.set_product('')
@@ -1100,6 +1102,11 @@ class MainWindow(FluentWindow):
         if not allow_pending:
             self.switch_page(0)
         return True
+
+    def on_batch_targets_queued(self, device_ids):
+        self.product_page.device_states.update({device_id: '等待巡检' for device_id in device_ids})
+        if self.product_page.rack_view:
+            self.product_page.rack_view.update_connected_status(self.product_page.connected_server_id, self.is_root)
 
     def on_device_inspection_started(self, device):
         self.product_page.set_device_state(device.get('id'), '巡检中')

@@ -52,7 +52,7 @@ def test_other_entry_task_never_opens_stale_inline_results(window):
 def test_sidebar_cannot_start_second_task(window, monkeypatch):
     window.device_inspection_page.inspection_worker = SimpleNamespace(isRunning=lambda: True)
     warnings = []
-    monkeypatch.setattr('ui.inspection_page.MessageBox', lambda *a: SimpleNamespace(exec=lambda: warnings.append(True)))
+    monkeypatch.setattr('ui.batch_inspection_page.QMessageBox.warning', lambda *a: warnings.append(True))
     window.inspection_page.start_inspection()
     assert warnings == [True] and window.inspection_page.inspection_worker is None
 

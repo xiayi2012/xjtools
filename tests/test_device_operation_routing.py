@@ -107,7 +107,7 @@ def test_connection_callback_starts_only_the_frozen_target(window, monkeypatch, 
     window._on_device_connection_result(token, True, '', dict(ssh_client=client))
     qtbot.wait(10)
     assert started == ['B']
-    assert window.inspection_page.current_device['id'] == 'B'
+    assert window.device_inspection_page.current_device['id'] == 'B'
 
 
 def test_connection_failure_and_stale_results_never_start(window, monkeypatch):
@@ -144,7 +144,7 @@ def test_history_and_report_follow_task_device_not_selected_card(window):
 
 
 def test_same_product_device_switch_clears_previous_outputs(window):
-    page = window.inspection_page
+    page = window.device_inspection_page
     page.set_device(dict(id='A', product='EDR'))
     page.builtin_outputs['old'] = 'old output'
     page.output_text.setPlainText('old output')
@@ -153,7 +153,7 @@ def test_same_product_device_switch_clears_previous_outputs(window):
 
 
 def test_report_header_uses_frozen_device_and_escapes_markup(window):
-    page = window.inspection_page
+    page = window.device_inspection_page
     page.task_device = dict(id='B', name='<nodeB>', host='192.0.2.2', port=22)
     html = page._generate_ai_report_html('', 'EDR', '2026-11-03', [])
     assert '192.0.2.2' in html and '&lt;nodeB&gt;' in html
@@ -164,7 +164,7 @@ def test_inspect_to_history_and_raw_report_end_to_end(window, qtbot, monkeypatch
     from PyQt6.QtCore import Qt
     from PyQt6.QtWidgets import QFileDialog
     from scripts.inspection_catalog import classify_output
-    page = window.inspection_page
+    page = window.device_inspection_page
     target = dict(id='B', name='nodeB', host='192.0.2.2', port=22)
     client = SimpleNamespace(is_connected=True, execute=lambda *a, **k: (0, 'connection_test_ok', ''),
                              execute_stream=lambda *a, **k: iter(['主机: test\n', '采集状态: 完成\n']))

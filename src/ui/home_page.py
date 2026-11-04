@@ -42,7 +42,7 @@ class HomePage(QWidget):
             ]),
             ('巡检与排障', [
                 ('troubleshoot.svg', 'AI 排障', '结合故障现象与知识库，辅助定位问题。', '进入排障', self.troubleshoot_clicked, 'troubleshoot'),
-                ('xunjian2.svg', '一键巡检', '执行服务器检查，查看输出并生成分析报告。', '开始巡检', self.inspection_clicked, 'inspect'),
+                ('xunjian2.svg', '批量巡检', '勾选多台设备，逐台检查并分别查看巡检结果。', '选择设备', self.inspection_clicked, 'inspect'),
                 ('jiaoben.svg', '巡检项目', '选择默认检查项、产品脚本与自定义脚本。', '选择项目', self.inspection_clicked, 'scripts'),
                 ('calendar.svg', '定时巡检', '设置执行计划，自动检查并留存巡检报告。', '设置计划', self.system_guard_clicked, 'schedule'),
             ]),
