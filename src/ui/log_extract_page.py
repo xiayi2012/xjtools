@@ -295,8 +295,8 @@ class LogExtractPage(QWidget):
                 border-color: #99f6e4;
             }
             QListWidget#logList::item:selected {
-                background: #50C9C3;
-                border-color: #50C9C3;
+                background: #148576;
+                border-color: #148576;
                 color: #ffffff;
             }
             QFrame#previewPanel {
@@ -315,7 +315,7 @@ class LogExtractPage(QWidget):
                 background: #ffffff; color: #475569; border: 1px solid #dbe3ee;
                 padding: 8px 18px; margin-right: 4px; border-top-left-radius: 6px; border-top-right-radius: 6px;
             }
-            QTabBar::tab:selected { background: #50C9C3; color: #ffffff; border-color: #50C9C3; }
+            QTabBar::tab:selected { background: #148576; color: #ffffff; border-color: #148576; }
             QPushButton#secondaryBtn {
                 background: #ffffff; border: 1px solid #d1d5db; border-radius: 6px;
                 color: #374151; font-weight: 600;

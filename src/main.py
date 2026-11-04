@@ -30,7 +30,7 @@ def main():
     app.setWindowIcon(QIcon(os.path.join(os.path.dirname(__file__), "..", "icons", "xunjian2.svg")))
 
     # 设置 Fluent 主题色
-    setThemeColor("#50C9C3")
+    setThemeColor("#148576")
 
     window = MainWindow()
     window.show()

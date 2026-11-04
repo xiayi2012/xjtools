@@ -614,12 +614,16 @@ class RackView(QWidget):
         self.detail_scroll.setWidget(self.detail)
         layout.addWidget(self.detail_scroll)
         self.setMinimumHeight(480)
-        self.select_device(selected_id)
+        self.select_device(selected_id, reveal_details=page.details_open)
 
-    def select_device(self, server_id):
+    def select_device(self, server_id, reveal_details=True):
+        server = next((s for s in self.page.servers if s.get('id') == server_id), None)
+        server_id = server.get('id') if server else None
         changed = server_id != self.selected_id
         self.selected_id = server_id
         self.page.selected_device_id = server_id
+        self.page.details_open = bool(server and reveal_details)
+        self.detail_scroll.setVisible(self.page.details_open)
         for face in self.faces:
             face.update_status(self.page.connected_server_id, server_id, self.page.device_states)
         for sid, button in self.unassigned_buttons.items():
@@ -635,22 +639,26 @@ class RackView(QWidget):
                 widget.setParent(None)
                 widget.deleteLater()
         self.detail_item = None
-        server = next((s for s in self.page.servers if s.get('id') == server_id), None)
+        if not self.page.details_open:
+            if changed and server:
+                self.selection_timer.start(0)
+            return
+        header = QWidget()
+        header_layout = QHBoxLayout(header)
+        header_layout.setContentsMargins(0, 0, 0, 0)
         heading = plain_label('设备详情')
         heading.setProperty('sectionTitle', True)
-        self.detail_layout.addWidget(heading)
-        if server is None:
-            self.detail_layout.addStretch()
-            icon = QLabel()
-            icon.setPixmap(FIF.IOT.icon().pixmap(36, 36))
-            icon.setAlignment(Qt.AlignmentFlag.AlignCenter)
-            self.detail_layout.addWidget(icon)
-            title = plain_label('选择一台设备')
-            title.setAlignment(Qt.AlignmentFlag.AlignCenter)
-            title.setStyleSheet('font-size:14px; font-weight:600; color:#486574;')
-            self.detail_layout.addWidget(title)
-            self.detail_layout.addStretch()
-            return
+        header_layout.addWidget(heading, 1)
+        close = QToolButton()
+        close.setObjectName('closeDeviceDetails')
+        close.setIcon(FIF.CLOSE.icon())
+        close.setFixedSize(24, 24)
+        close.setToolTip('关闭设备详情')
+        close.setAccessibleName('关闭设备详情')
+        close.setStyleSheet('QToolButton {background:transparent; border:0; border-radius:4px;} QToolButton:hover {background:#edf3f6;}')
+        close.clicked.connect(lambda: self.select_device(None))
+        header_layout.addWidget(close)
+        self.detail_layout.addWidget(header)
         from .product_page import ServerDetailItem
         item = ServerDetailItem(server)
         item.set_connected(server_id == self.page.connected_server_id, self.page.is_root if server_id == self.page.connected_server_id else False)
@@ -748,4 +756,4 @@ class RackView(QWidget):
                 bar.setValue(bar.value() + 24)
 
     def update_connected_status(self, connected_id, is_root=False):
-        self.select_device(self.selected_id)
+        self.select_device(self.selected_id, reveal_details=self.page.details_open)

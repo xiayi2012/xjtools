@@ -1607,6 +1607,7 @@ class ProductPage(QWidget):
         self.racks = []
         self.rack_view = None
         self.selected_device_id = None
+        self.details_open = False
         self.device_states = {}
         self.drag_token = str(uuid4())
         self.drag_active = False

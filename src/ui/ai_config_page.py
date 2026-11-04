@@ -12,13 +12,14 @@ from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QGridLayout,
     QLabel, QPushButton, QGroupBox, QLineEdit,
     QComboBox, QTextEdit, QMessageBox, QSplitter,
-    QFrame, QScrollArea, QDialog, QSpinBox
+    QFrame, QScrollArea, QDialog, QSpinBox, QApplication
 )
 from PyQt6.QtCore import Qt, pyqtSignal
 from qfluentwidgets import PrimaryPushButton, InfoBar
 
 from utils import get_config_dir, get_ai_config_path
 from .dialog_icons import dialog_icon
+from .button_styles import install_button_styles
 
 
 class AIConfigPage(QWidget):
@@ -488,32 +489,13 @@ class AIConfigPage(QWidget):
         """)
 
     def _apply_action_button_styles(self):
-        button_style = """
-            QPushButton {
-                background-color: #50C9C3;
-                color: #ffffff;
-                border: none;
-                border-radius: 6px;
-                font-size: 14px;
-                font-weight: 700;
-            }
-            QPushButton:hover {
-                background-color: #3BA8A2;
-            }
-            QPushButton:pressed {
-                background-color: #2f8f8a;
-            }
-            QPushButton:disabled {
-                background-color: #94a3b8;
-                color: #ffffff;
-            }
-        """
-        self.test_btn.setStyleSheet(button_style)
-        self.save_btn.setStyleSheet(button_style)
-        if hasattr(self, "cancel_edit_btn"):
-            self.cancel_edit_btn.setStyleSheet(button_style)
-        if hasattr(self, "add_model_btn"):
-            self.add_model_btn.setStyleSheet(button_style)
+        controller = install_button_styles(QApplication.instance())
+        for name, role in [('test_btn', 'secondary'), ('save_btn', 'primary'),
+                           ('cancel_edit_btn', 'secondary'), ('add_model_btn', 'primary')]:
+            button = getattr(self, name, None)
+            if button is not None:
+                button.setProperty('buttonRole', role)
+                controller.schedule(button)
 
     def _api_type_for_provider(self, provider_key: str) -> str:
         return self.PROVIDER_API_TYPE.get(provider_key, "openai")

@@ -24,6 +24,7 @@ from qfluentwidgets import (
 from qfluentwidgets import FluentIcon as FIF
 
 from .product_page import ProductPage, decrypt_password
+from .button_styles import install_button_styles
 from .home_page import HomePage
 from .inspection_page import InspectionPage, ExportReportWorker
 from .batch_inspection_page import BatchInspectionPage
@@ -352,6 +353,7 @@ class MainWindow(FluentWindow):
     def __init__(self):
         """初始化主窗口"""
         super().__init__()
+        install_button_styles(QApplication.instance())
         self.current_page_index = 0
         self.is_connected = False
         self.is_root = False
