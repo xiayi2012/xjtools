@@ -9,9 +9,9 @@ from PyQt6.QtWidgets import (
     QCheckBox, QGroupBox, QTextEdit, QMessageBox,
     QFileDialog, QComboBox, QListWidget, QListWidgetItem,
     QSplitter, QFrame, QDialog, QDialogButtonBox, QSizePolicy,
-    QInputDialog
+    QInputDialog, QApplication
 )
-from qfluentwidgets import PrimaryPushButton
+from qfluentwidgets import PrimaryPushButton, CheckBox
 from PyQt6.QtCore import Qt, pyqtSignal, QThread, QMutex, QMutexLocker
 from PyQt6.QtGui import QFont
 
@@ -31,6 +31,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..'))
 
 from src.core.ssh_connector import SSHClientWrapper
 from .dialog_icons import dialog_icon
+from .button_styles import install_button_styles, PRIMARY
 
 
 class OTPPasswordDialog(QDialog):
@@ -219,27 +220,35 @@ class OTPPasswordDialog(QDialog):
 
 
 class RootPasswordDialog(QDialog):
-    """root密码输入对话框"""
+    """启用当前连接的 sudo 命令模式。"""
     
     def __init__(self, parent=None):
         super().__init__(parent)
+        install_button_styles(QApplication.instance())
+        self.setObjectName('rootPasswordDialog')
+        self.setStyleSheet(f'''
+            QDialog#rootPasswordDialog {{background:#f8fafc; color:#3c5664;}}
+            QDialog#rootPasswordDialog QLabel {{background:transparent; color:#3c5664;}}
+            QLineEdit#sudoPasswordInput {{
+                background:#ffffff; color:#263f4c; border:1px solid #cfdee6;
+                border-radius:6px; padding:8px 12px; font-size:14px;
+                selection-background-color:{PRIMARY}; selection-color:#ffffff;
+            }}
+            QLineEdit#sudoPasswordInput:hover {{border-color:#9dbbb9;}}
+            QLineEdit#sudoPasswordInput:focus {{border-color:{PRIMARY};}}
+        ''')
         self.setWindowTitle("启用 root 命令")
         self.setWindowIcon(dialog_icon("connect.svg"))
-        self.setMinimumWidth(400)
-        self.setMinimumHeight(200)
+        self.setMinimumWidth(460)
         self.setModal(True)
         
         layout = QVBoxLayout(self)
-        layout.setSpacing(15)
+        layout.setContentsMargins(24, 24, 24, 20)
+        layout.setSpacing(16)
         
-        # 标题图标
         title_layout = QHBoxLayout()
-        title_icon = QLabel("🔐")
-        title_icon.setStyleSheet("font-size: 28px;")
-        title_layout.addWidget(title_icon)
-        
         title_label = QLabel("启用 root 命令")
-        title_label.setStyleSheet("font-size: 20px; font-weight: bold; color: #7c3aed;")
+        title_label.setStyleSheet("font-size:20px; font-weight:600; color:#263f4c;")
         title_layout.addWidget(title_label)
         title_layout.addStretch()
         layout.addLayout(title_layout)
@@ -247,32 +256,27 @@ class RootPasswordDialog(QDialog):
         # 说明
         instr_label = QLabel("输入当前登录用户的 sudo 密码，后续命令将以 root 执行。")
         instr_label.setWordWrap(True)
-        instr_label.setStyleSheet("color: #6b7280; font-size: 13px; padding-left: 36px;")
+        instr_label.setStyleSheet("color:#647b89; font-size:13px;")
         layout.addWidget(instr_label)
         
         # 密码输入
         password_layout = QHBoxLayout()
-        password_label = QLabel("密码:")
-        password_label.setStyleSheet("font-size: 14px; color: #374151; font-weight: bold;")
+        password_label = QLabel("sudo 密码")
+        password_label.setStyleSheet("font-size:13px;")
         password_layout.addWidget(password_label)
         
         self.password_input = QLineEdit()
+        self.password_input.setObjectName('sudoPasswordInput')
+        password_label.setBuddy(self.password_input)
         self.password_input.setEchoMode(QLineEdit.EchoMode.Password)
         self.password_input.setPlaceholderText("输入 sudo 密码")
         self.password_input.setMinimumHeight(40)
-        self.password_input.setStyleSheet("""
-            font-size: 15px;
-            padding: 8px 12px;
-            border: 2px solid #d1d5db;
-            border-radius: 8px;
-        """)
         self.password_input.textChanged.connect(self.on_password_changed)
         password_layout.addWidget(self.password_input, 1)
         layout.addLayout(password_layout)
         
         # 显示/隐藏密码
-        self.show_password_checkbox = QCheckBox("显示密码")
-        self.show_password_checkbox.setStyleSheet("color: #6b7280; font-size: 13px; padding-left: 50px;")
+        self.show_password_checkbox = CheckBox("显示密码")
         self.show_password_checkbox.toggled.connect(
             lambda checked: self.password_input.setEchoMode(
                 QLineEdit.EchoMode.Normal if checked else QLineEdit.EchoMode.Password
@@ -280,36 +284,20 @@ class RootPasswordDialog(QDialog):
         )
         layout.addWidget(self.show_password_checkbox)
         
-        # 提示
-        hint_label = QLabel("💡 提示：切换后将以root身份执行后续操作")
-        hint_label.setStyleSheet("color: #f59e0b; font-size: 11px; padding-left: 50px;")
-        layout.addWidget(hint_label)
-        
         layout.addStretch()
         
         # 按钮
         ok_btn = PrimaryPushButton("启用")
+        ok_btn.setMinimumWidth(88)
         ok_btn.setMinimumHeight(40)
+        ok_btn.setDefault(True)
         ok_btn.setEnabled(False)  # 密码为空时禁用
         ok_btn.clicked.connect(self.accept)
         
         cancel_btn = QPushButton("取消")
+        cancel_btn.setMinimumWidth(88)
         cancel_btn.setMinimumHeight(40)
-        cancel_btn.setStyleSheet("""
-            QPushButton {
-                background: #f3f4f6;
-                color: #6b7280;
-                border: 1px solid #e5e7eb;
-                border-radius: 8px;
-                font-size: 14px;
-                font-weight: bold;
-                padding: 10px 20px;
-            }
-            QPushButton:hover {
-                background: #e5e7eb;
-                border-color: #d1d5db;
-            }
-        """)
+        cancel_btn.setAutoDefault(False)
         cancel_btn.clicked.connect(self.reject)
         
         btn_layout = QHBoxLayout()
