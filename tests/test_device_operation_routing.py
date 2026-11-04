@@ -80,6 +80,19 @@ def test_busy_task_prevents_disconnect(window):
     assert calls == []
 
 
+def test_exit_waits_for_connection_and_scheduled_workers(window):
+    window._force_quit = False
+    window.connection_worker = SimpleNamespace(isRunning=lambda: True)
+    window.exit_from_tray()
+    assert not window._force_quit
+    window.connection_worker = None
+    window.scheduled_worker = SimpleNamespace(isRunning=lambda: True)
+    assert window._has_shutdown_work()
+    window.exit_from_tray()
+    assert not window._force_quit
+    window._force_quit = True
+
+
 def test_connection_callback_starts_only_the_frozen_target(window, monkeypatch, qtbot):
     from PyQt6.QtCore import QObject, pyqtSignal
     class Worker(QObject):

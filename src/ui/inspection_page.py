@@ -47,21 +47,16 @@ class InspectionWorker(QThread):
         builtin_output = {}
         custom_output = {}
         
-        print(f"[DEBUG] InspectionWorker started with {len(self.scripts)} scripts")
-        print(f"[DEBUG] ssh_client: {self.ssh_client}")
-        print(f"[DEBUG] ssh_client.is_connected: {getattr(self.ssh_client, 'is_connected', 'N/A')}")
         
         try:
-            for idx, script in enumerate(self.scripts):
+            for script in self.scripts:
                 if not self.is_running:
-                    print(f"[DEBUG] Inspection stopped by user")
                     break
                 
                 script_name = script.get('Name', script.get('name', 'Unknown'))
                 script_type = script.get('_type', 'builtin')
                 output_lines = []
                 
-                print(f"[DEBUG] [{idx+1}/{len(self.scripts)}] Executing: {script_name} (type={script_type})")
                 
                 self.script_output.emit(script_name, f"\n{'='*60}\n")
                 if script_type == 'custom':
@@ -72,13 +67,9 @@ class InspectionWorker(QThread):
                 
                 # 执行命令
                 command = script.get('command', script.get('content', ''))
-                print(f"[DEBUG] Command: {command[:100]}...")
 
-                # Debug: verify scripts dict
-                print(f"[DEBUG WORKER] script_name={script_name} _type={script_type} scripts_count={len(self.scripts)}")
                 
                 error_msg = ""
-                line_count = 0
                 try:
                     for line in self.ssh_client.execute_stream(command, timeout=script.get("timeout", 300)):
                         if line and (
@@ -96,7 +87,6 @@ class InspectionWorker(QThread):
                         # 空行是心跳信号，用于检查 is_running
                         if line == "":
                             if not self.is_running:
-                                print(f"[DEBUG] Stopping execution of {script_name}")
                                 # 请求SSH客户端停止
                                 if hasattr(self.ssh_client, 'request_stop'):
                                     self.ssh_client.request_stop()
@@ -104,18 +94,14 @@ class InspectionWorker(QThread):
                             continue  # 跳过心跳，不计入输出
                         
                         if not self.is_running:
-                            print(f"[DEBUG] Stopping execution of {script_name}")
                             # 请求SSH客户端停止
                             if hasattr(self.ssh_client, 'request_stop'):
                                 self.ssh_client.request_stop()
                             break
                         output_lines.append(line)
                         self.script_output.emit(script_name, line)
-                        line_count += 1
-                    print(f"[DEBUG] Script {script_name} completed: {line_count} lines")
                 except Exception as e:
                     error_msg = str(e)
-                    print(f"[DEBUG] Script {script_name} error: {error_msg}")
                     self.script_output.emit(script_name, f"\n❌ 执行错误: {error_msg}\n")
                     failed_output = ''.join(output_lines) + f"\n执行错误: {error_msg}\n"
                     target = custom_output if script_type == 'custom' else builtin_output
@@ -145,9 +131,6 @@ class InspectionWorker(QThread):
                 "builtin": builtin_output,
                 "custom": custom_output
             }
-            _d("WORKER", f"EMITTING output_received: builtin={list(builtin_output.keys())}, custom={list(custom_output.keys())}")
-            _d("WORKER", f"  builtin sample: { {k: v[:50] if v else '' for k,v in list(builtin_output.items())[:3]}}")
-            _d("WORKER", f"  custom sample: { {k: v[:50] if v else '' for k,v in list(custom_output.items())[:3]}}")
             self.output_received.emit("all", json.dumps(all_output, ensure_ascii=False, indent=2))
             
             if self.is_running:
@@ -172,27 +155,12 @@ class InspectionWorker(QThread):
             self.ssh_client.request_stop()
 
 
-import json
-import os
-
-# 调试日志文件路径
-_DEBUG_LOG = os.path.join(os.path.expanduser("~"), "inspection_debug.log")
-
-def _d(tag, msg):
-    """写调试日志到文件（始终可查）"""
-    try:
-        with open(_DEBUG_LOG, "a", encoding="utf-8") as f:
-            f.write(f"[{tag}] {msg}\n")
-    except Exception:
-        pass
-
-
 class LoadingDialog(QDialog):
     """自定义加载对话框，带进度展示和停止按钮"""
 
     stop_requested = pyqtSignal()
 
-    def __init__(self, message="AI思考中，请稍候...", parent=None):
+    def __init__(self, message="正在分析…", parent=None):
         super().__init__(parent)
         self.setWindowTitle("导出AI分析报告")
         robot_icon = Path(__file__).resolve().parents[2] / "icons" / "robot.svg"
@@ -313,8 +281,8 @@ class LoadingDialog(QDialog):
         else:
             self.progress_bar.setRange(0, 0)
         if step_name:
-            if step_name.startswith("AI思考中"):
-                self.message_label.setText("AI思考中")
+            if step_name.startswith("正在分析"):
+                self.message_label.setText("正在分析")
                 model_name = step_name.split("：", 1)[1] if "：" in step_name else ""
                 self.step_label.setText(f"当前使用模型：{model_name}" if model_name else "")
             else:
@@ -473,7 +441,7 @@ class ExportReportWorker(QThread):
                     self.export_completed.emit("", "已停止分析")
                     return
 
-                self.progress_updated.emit(2, 3, f"AI思考中：{model_name}")
+                self.progress_updated.emit(2, 3, f"正在分析：{model_name}")
 
                 try:
                     if api_type == 'openai':
@@ -712,7 +680,7 @@ class AIAnalysisWorker(QThread):
         base_url = self.api_config.get('base_url', 'https://api.openai.com/v1')
         model = self.api_config.get('model', 'gpt-3.5-turbo')
         
-        self.analysis_progress.emit(f"AI思考中\n当前使用模型：{model}")
+        self.analysis_progress.emit(f"正在分析\n当前使用模型：{model}")
         
         url = f"{base_url}/chat/completions"
         
@@ -740,7 +708,7 @@ class AIAnalysisWorker(QThread):
             method='POST'
         )
         
-        self.analysis_progress.emit(f"AI思考中\n当前使用模型：{model}")
+        self.analysis_progress.emit(f"正在分析\n当前使用模型：{model}")
 
         try:
             with urllib.request.urlopen(req, timeout=self._api_timeout) as response:
@@ -765,7 +733,7 @@ class AIAnalysisWorker(QThread):
         base_url = self.api_config.get('base_url', 'https://api.anthropic.com/v1')
         model = self.api_config.get('model', 'claude-3-sonnet-20240229')
         
-        self.analysis_progress.emit(f"AI思考中\n当前使用模型：{model}")
+        self.analysis_progress.emit(f"正在分析\n当前使用模型：{model}")
         
         url = f"{base_url}/messages"
         
@@ -789,7 +757,7 @@ class AIAnalysisWorker(QThread):
             method='POST'
         )
         
-        self.analysis_progress.emit(f"AI思考中\n当前使用模型：{model}")
+        self.analysis_progress.emit(f"正在分析\n当前使用模型：{model}")
         
         try:
             with urllib.request.urlopen(req, timeout=self._api_timeout) as response:
@@ -809,7 +777,7 @@ class AIAnalysisWorker(QThread):
         deployment = self.api_config.get('deployment', '')
         api_version = self.api_config.get('api_version', '2024-02-15-preview')
         
-        self.analysis_progress.emit(f"AI思考中\n当前使用模型：{deployment or 'Azure部署'}")
+        self.analysis_progress.emit(f"正在分析\n当前使用模型：{deployment or 'Azure部署'}")
         
         url = f"{base_url}/openai/deployments/{deployment}/chat/completions?api-version={api_version}"
         
@@ -826,7 +794,7 @@ class AIAnalysisWorker(QThread):
             url, data=json.dumps(data).encode('utf-8'), headers=headers, method='POST'
         )
         
-        self.analysis_progress.emit(f"AI思考中\n当前使用模型：{deployment or 'Azure部署'}")
+        self.analysis_progress.emit(f"正在分析\n当前使用模型：{deployment or 'Azure部署'}")
         
         try:
             with urllib.request.urlopen(req, timeout=self._api_timeout) as response:
@@ -845,7 +813,7 @@ class AIAnalysisWorker(QThread):
         base_url = self.api_config.get('base_url', 'http://localhost:11434')
         model = self.api_config.get('model', 'llama3')
         
-        self.analysis_progress.emit(f"AI思考中\n当前使用模型：{model}")
+        self.analysis_progress.emit(f"正在分析\n当前使用模型：{model}")
         
         url = f"{base_url}/chat"
         
@@ -861,7 +829,7 @@ class AIAnalysisWorker(QThread):
             url, data=json.dumps(data).encode('utf-8'), headers=headers, method='POST'
         )
         
-        self.analysis_progress.emit(f"AI思考中\n当前使用模型：{model}")
+        self.analysis_progress.emit(f"正在分析\n当前使用模型：{model}")
         
         try:
             with urllib.request.urlopen(req, timeout=self._api_timeout) as response:
@@ -879,8 +847,6 @@ class InspectionPage(QWidget):
     inspection_completed = pyqtSignal(dict)
     inspection_started = pyqtSignal(dict)
     report_saved = pyqtSignal(dict)
-    export_report_clicked = pyqtSignal(dict)
-    goto_ai_analysis = pyqtSignal(dict)
     
     def __init__(self):
         """初始化巡检页面"""
@@ -1057,7 +1023,7 @@ class InspectionPage(QWidget):
         button_layout.addWidget(self.export_btn)
 
         # 导出巡检报告按钮 - 巡检完成后可用，点击后调用AI美化原始输出
-        self.export_ai_btn = QPushButton("AI分析并导出")
+        self.export_ai_btn = QPushButton("分析并导出")
         self.export_ai_btn.setObjectName("exportAiButton")
         self.export_ai_btn.setMinimumHeight(50)
         self.export_ai_btn.setMinimumWidth(140)
@@ -1258,7 +1224,6 @@ class InspectionPage(QWidget):
     
     def set_inspection_config(self, scripts: list, custom_scripts: list, product_scripts: list = None):
         if self.inspection_worker is not None:
-            _d("CONFIG", f"Stopping previous inspection worker: isRunning={self.inspection_worker.isRunning()}")
             if self.inspection_worker.isRunning():
                 self.inspection_worker.stop()
                 
@@ -1267,7 +1232,6 @@ class InspectionPage(QWidget):
         self.product_scripts = product_scripts or []
         self._clear_inspection_state()
         self.builtin_outputs = {}
-        _d("CONFIG", f"set_inspection_config: scripts={len(self.scripts)}, custom_scripts={len(self.custom_scripts)}, product_scripts={len(self.product_scripts)}")
         self.custom_script_outputs = {}
         
         self._sync_inspect_list_from_config()
@@ -1537,16 +1501,6 @@ class InspectionPage(QWidget):
             return None
         return selected["value"]
 
-    def on_next_to_ai(self):
-        """跳转到AI分析页面（保留向后兼容）"""
-        inspection_data = {
-            "output": self.output_text.toPlainText(),
-            "script_outputs": {
-                "builtin": self.builtin_outputs,
-                "custom": self.custom_script_outputs
-            }
-}
-        self.goto_ai_analysis.emit(inspection_data)
 
     def _load_ai_config(self) -> dict:
         """加载AI配置"""
@@ -1571,7 +1525,6 @@ class InspectionPage(QWidget):
                 if 'base_url' in config:
                     original = config['base_url']
                     config['base_url'] = config['base_url'].replace('`', '').replace('\u0060', '').replace('\uff40', '').strip()
-                    print(f"[DEBUG] Cleaned base_url: '{original}' -> '{config['base_url']}'")
                 if 'api_key' in config:
                     config['api_key'] = config['api_key'].replace('`', '').replace('\u0060', '').replace('\uff40', '').strip()
                 if 'model' in config:
@@ -1804,29 +1757,19 @@ class InspectionPage(QWidget):
     
     def on_export_ai_report(self):
         """导出AI美化巡检报告"""
-        print("[DEBUG] on_export_ai_report called")
-        _d("EXPORT", "on_export_ai_report started")
 
         # 使用原始巡检输出进行AI美化
         raw_output = self.output_text.toPlainText().strip()
-        print(f"[DEBUG] Raw output length: {len(raw_output)}")
         if not raw_output:
-            print("[DEBUG] No raw output - showing warning")
-            _d("EXPORT", "No raw output")
             MessageBox("警告", "没有巡检数据可导出", self).exec()
             return
 
         # 加载AI配置
         api_config = self._load_ai_config()
-        _d("EXPORT", f"API config loaded: {bool(api_config)}")
         if not api_config:
-            print("[DEBUG] api_config is None")
-            _d("EXPORT", "api_config is None")
             MessageBox("警告", "请先在AI大模型配置页面配置API", self).exec()
             return
         if not api_config.get('api_key'):
-            print("[DEBUG] No API key in config")
-            _d("EXPORT", "No API key")
             MessageBox("警告", "请先在AI大模型配置页面配置API", self).exec()
             return
 
@@ -1847,7 +1790,7 @@ class InspectionPage(QWidget):
 
         # 显示加载对话框
         self._export_cancelled = False
-        self.loading_dialog = LoadingDialog("AI思考中", self)
+        self.loading_dialog = LoadingDialog("正在分析", self)
         self.loading_dialog.stop_requested.connect(self._on_stop_analysis)
         self.loading_dialog.show()
         QApplication.processEvents()
@@ -1882,11 +1825,8 @@ class InspectionPage(QWidget):
 
     def _on_export_completed(self, result: str, error_msg: str):
         """导出完成回调"""
-        print(f"[DEBUG] _on_export_completed called - result length: {len(result) if result else 0}, error: {error_msg}")
-        _d("EXPORT", f"export_completed - result length: {len(result) if result else 0}, error: {error_msg}")
 
         if getattr(self, '_export_cancelled', False):
-            _d("EXPORT", "Ignored export result after user cancelled")
             return
 
         try:
@@ -1894,26 +1834,23 @@ class InspectionPage(QWidget):
                 self.loading_dialog._allow_close_without_stop = True
                 self.loading_dialog.close()
         except Exception as e:
-            print(f"[DEBUG] Error closing loading dialog: {e}")
+            pass
 
         if error_msg:
-            _d("EXPORT", f"Error: {error_msg}")
             try:
                 MessageBox("错误", error_msg, self).exec()
             except Exception as e:
-                print(f"[DEBUG] Error showing message box: {e}")
+                pass
             return
 
         if not result:
-            _d("EXPORT", "Empty result")
             try:
                 MessageBox("错误", "AI返回为空，请稍后重试", self).exec()
             except Exception as e:
-                print(f"[DEBUG] Error showing message box: {e}")
+                pass
             return
 
         try:
-            _d("EXPORT", "Starting to generate HTML report...")
             import re
             from datetime import datetime
             product_name = getattr(self, 'product_name', '未知产品')
@@ -1923,7 +1860,6 @@ class InspectionPage(QWidget):
             timestamp_file = datetime.now().strftime("%Y%m%d_%H%M%S")
             default_filename = f"巡检报告_{product_name}_{timestamp_file}.html"
 
-            _d("EXPORT", f"Opening save dialog with default filename: {default_filename}")
             file_path, _ = QFileDialog.getSaveFileName(
                 self, "保存巡检报告",
                 default_filename,
@@ -1931,10 +1867,8 @@ class InspectionPage(QWidget):
             )
 
             if not file_path:
-                _d("EXPORT", "User cancelled save dialog")
                 return
 
-            _d("EXPORT", f"User selected path: {file_path}")
             
             inspection_items = []
             for item_data in getattr(self, 'task_checks', None) or self._get_checked_inspection_items():
@@ -1943,192 +1877,22 @@ class InspectionPage(QWidget):
                 inspection_items.append({'name': name, 'status': classify_output(output), 'output': output})
 
             html_content = self._generate_ai_report_html(result, product_name, timestamp, inspection_items)
-            _d("EXPORT", f"HTML content generated, length: {len(html_content)}")
             
-            _d("EXPORT", f"Writing to file: {file_path}")
             with open(file_path, 'w', encoding='utf-8') as f:
                 f.write(html_content)
             self._report_saved(file_path)
 
-            _d("EXPORT", f"Report saved to: {file_path}")
             MessageBox("成功", f"报告已保存到:\n{file_path}", self).exec()
             self._open_folder(file_path)
 
         except Exception as e:
             import traceback
             error_detail = traceback.format_exc()
-            _d("EXPORT", f"Exception: {error_detail}")
-            print(f"[DEBUG] Exception in _on_export_completed: {error_detail}")
             try:
                 MessageBox("错误", f"生成报告失败: {str(e)}", self).exec()
             except Exception as me:
-                print(f"[DEBUG] Error showing error message: {me}")
+                pass
 
-    def _call_ai_api_sync(self, api_config: dict, inspection_data: str, prompt: str) -> str:
-        """同步调用OpenAI API"""
-        import urllib.request
-        import urllib.error
-        import json
-
-        api_key = api_config.get('api_key', '')
-        base_url = api_config.get('base_url', 'https://api.openai.com/v1')
-        model = api_config.get('model', 'gpt-3.5-turbo')
-
-        url = f"{base_url}/chat/completions"
-
-        messages = [
-            {"role": "system", "content": prompt},
-            {"role": "user", "content": f"请分析以下巡检结果：\n\n{inspection_data}"}
-        ]
-
-        data = {
-            "model": model,
-            "messages": messages,
-            "temperature": 0.7,
-            "max_tokens": 16000
-        }
-
-        headers = {
-            "Content-Type": "application/json",
-            "Authorization": f"Bearer {api_key}"
-        }
-
-        req = urllib.request.Request(
-            url,
-            data=json.dumps(data).encode('utf-8'),
-            headers=headers,
-            method='POST'
-        )
-
-        try:
-            with urllib.request.urlopen(req, timeout=api_config.get('api_timeout', 300)) as response:
-                result = json.loads(response.read().decode('utf-8'))
-                return ExportReportWorker._clean_ai_response(result['choices'][0]['message']['content'])
-        except (urllib.error.HTTPError, socket.error, OSError) as e:
-            error_body = ''
-            if isinstance(e, urllib.error.HTTPError):
-                error_body = e.read().decode('utf-8', errors='ignore')
-                try:
-                    error_json = json.loads(error_body)
-                    error_msg = error_json.get('error', {}).get('message', error_body)
-                except:
-                    error_msg = error_body
-                raise Exception(f"HTTP {e.code} 错误: {error_msg}")
-            else:
-                error_msg = str(e)
-                if '10054' in error_msg or '远程主机强迫关闭' in error_msg:
-                    raise Exception(f"连接被远程服务器关闭，请检查API配置是否正确或稍后重试\n\n详细信息: {error_msg}")
-                raise Exception(f"网络错误: {error_msg}")
-
-    def _call_claude_api_sync(self, api_config: dict, inspection_data: str, prompt: str) -> str:
-        """同步调用Claude API"""
-        import urllib.request
-        import json
-
-        api_key = api_config.get('api_key', '')
-        base_url = api_config.get('base_url', 'https://api.anthropic.com/v1')
-        model = api_config.get('model', 'claude-3-sonnet-20240229')
-
-        url = f"{base_url}/messages"
-
-        data = {
-            "model": model,
-            "max_tokens": 16000,
-            "system": prompt,
-            "messages": [{"role": "user", "content": f"请分析以下巡检结果：\n\n{inspection_data}"}]
-        }
-
-        headers = {
-            "Content-Type": "application/json",
-            "x-api-key": api_key,
-            "anthropic-version": "2023-06-01"
-        }
-
-        req = urllib.request.Request(
-            url,
-            data=json.dumps(data).encode('utf-8'),
-            headers=headers,
-            method='POST'
-        )
-
-        try:
-            with urllib.request.urlopen(req, timeout=api_config.get('api_timeout', 300)) as response:
-                result = json.loads(response.read().decode('utf-8'))
-                return ExportReportWorker._clean_ai_response(result['content'][0]['text'])
-        except (urllib.error.HTTPError, socket.error, OSError) as e:
-            error_body = ''
-            if isinstance(e, urllib.error.HTTPError):
-                error_body = e.read().decode('utf-8', errors='ignore')
-                try:
-                    error_json = json.loads(error_body)
-                    error_msg = error_json.get('error', {}).get('message', error_body)
-                except:
-                    error_msg = error_body
-                raise Exception(f"HTTP {e.code} 错误: {error_msg}")
-            else:
-                error_msg = str(e)
-                if '10054' in error_msg or '远程主机强迫关闭' in error_msg:
-                    raise Exception(f"连接被远程服务器关闭，请检查API配置是否正确或稍后重试\n\n详细信息: {error_msg}")
-                raise Exception(f"网络错误: {error_msg}")
-
-    def _call_azure_api_sync(self, api_config: dict, inspection_data: str, prompt: str) -> str:
-        """同步调用Azure OpenAI API"""
-        import urllib.request
-        import urllib.error
-        import json
-
-        api_key = api_config.get('api_key', '')
-        base_url = api_config.get('base_url', '')
-        deployment = api_config.get('model', 'gpt-35-turbo')
-        api_version = "2024-02-01"
-
-        if not base_url:
-            raise Exception("Azure API地址未配置")
-
-        url = f"{base_url}/openai/deployments/{deployment}/chat/completions?api-version={api_version}"
-
-        messages = [
-            {"role": "system", "content": prompt},
-            {"role": "user", "content": f"请分析以下巡检结果：\n\n{inspection_data}"}
-        ]
-
-        data = {
-            "messages": messages,
-            "temperature": 0.7,
-            "max_tokens": 16000
-        }
-
-        headers = {
-            "Content-Type": "application/json",
-            "api-key": api_key
-        }
-
-        req = urllib.request.Request(
-            url,
-            data=json.dumps(data).encode('utf-8'),
-            headers=headers,
-            method='POST'
-        )
-
-        try:
-            with urllib.request.urlopen(req, timeout=api_config.get('api_timeout', 300)) as response:
-                result = json.loads(response.read().decode('utf-8'))
-                return ExportReportWorker._clean_ai_response(result['choices'][0]['message']['content'])
-        except (urllib.error.HTTPError, socket.error, OSError) as e:
-            error_body = ''
-            if isinstance(e, urllib.error.HTTPError):
-                error_body = e.read().decode('utf-8', errors='ignore')
-                try:
-                    error_json = json.loads(error_body)
-                    error_msg = error_json.get('error', {}).get('message', error_body)
-                except:
-                    error_msg = error_body
-                raise Exception(f"HTTP {e.code} 错误: {error_msg}")
-            else:
-                error_msg = str(e)
-                if '10054' in error_msg or '远程主机强迫关闭' in error_msg:
-                    raise Exception(f"连接被远程服务器关闭，请检查API配置是否正确或稍后重试\n\n详细信息: {error_msg}")
-                raise Exception(f"网络错误: {error_msg}")
 
     def _extract_key_results(self, name: str, output: str, status: str) -> list:
         """从单个巡检项原始输出中提取真正适合列表展示的关键结果。"""
@@ -3736,407 +3500,11 @@ class InspectionPage(QWidget):
             <div class="ai-content">{ai_content_html}</div>
             <div class="safety-note">安全边界：报告建议以排查、备份、验证和变更审批为主，避免直接执行删除、格式化、强制停止服务等敏感操作。</div>
         </section>
-        <div class="footer">AI智能运维巡检报告 · {product} · {timestamp}</div>
+        <div class="footer">Linux 运维巡检报告 · {product} · {timestamp}</div>
     </main>
 </body>
 </html>'''
 
-        return f'''<!DOCTYPE html>
-<html lang="zh-CN">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>巡检报告 - {product}</title>
-    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
-    <style>
-        * {{ margin: 0; padding: 0; box-sizing: border-box; }}
-        body {{
-            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-            min-height: 100vh;
-            padding: 20px;
-        }}
-        .container {{ max-width: 1200px; margin: 0 auto; }}
-        .report-card {{
-            background: white;
-            border-radius: 16px;
-            box-shadow: 0 20px 60px rgba(0,0,0,0.3);
-            overflow: hidden;
-            margin-bottom: 20px;
-        }}
-        .report-header {{
-            background: linear-gradient(135deg, #1e3a5f 0%, #2d5a87 100%);
-            color: white;
-            padding: 30px 40px;
-            text-align: center;
-        }}
-        .report-header h1 {{ font-size: 28px; font-weight: 600; letter-spacing: 2px; margin-bottom: 8px; }}
-        .report-header .subtitle {{ font-size: 14px; opacity: 0.8; }}
-        .report-body {{ padding: 30px 40px; }}
-
-        /* 统计卡片区域 */
-        .stats-grid {{
-            display: grid;
-            grid-template-columns: repeat(4, 1fr);
-            gap: 20px;
-            margin-bottom: 30px;
-        }}
-        .stat-card {{
-            background: linear-gradient(135deg, #e0e7ff 0%, #c7d2fe 100%);
-            border-radius: 12px;
-            padding: 20px;
-            text-align: center;
-            border: 1px solid #6366f1;
-        }}
-        .stat-card.success {{ background: linear-gradient(135deg, #ecfdf5 0%, #d1fae5 100%); border-color: #10b981; }}
-        .stat-card.warning {{ background: linear-gradient(135deg, #fffbeb 0%, #fef3c7 100%); border-color: #f59e0b; }}
-        .stat-card.danger {{ background: linear-gradient(135deg, #fef2f2 0%, #fecaca 100%); border-color: #ef4444; }}
-        .stat-value {{ font-size: 36px; font-weight: bold; color: #4f46e5; }}
-        .stat-card.success .stat-value {{ color: #10b981; }}
-        .stat-card.warning .stat-value {{ color: #f59e0b; }}
-        .stat-card.danger .stat-value {{ color: #ef4444; }}
-        .stat-label {{ font-size: 14px; color: #6b7280; margin-top: 8px; }}
-
-        /* 图表区域 */
-        .charts-grid {{
-            display: grid;
-            grid-template-columns: 1fr 1fr;
-            gap: 20px;
-            margin-bottom: 30px;
-        }}
-        .chart-card {{
-            background: #f8fafc;
-            border-radius: 12px;
-            padding: 20px;
-            border: 1px solid #e2e8f0;
-        }}
-        .chart-card h3 {{
-            color: #374151;
-            font-size: 16px;
-            margin-bottom: 15px;
-            text-align: center;
-        }}
-        .chart-container {{ position: relative; height: 200px; }}
-
-        /* 问题表格 */
-        .issues-section {{
-            margin-bottom: 20px;
-        }}
-        .issues-table {{
-            width: 100%;
-            border-collapse: collapse;
-            margin: 10px 0;
-            background: white;
-            border-radius: 8px;
-            overflow: hidden;
-            box-shadow: 0 1px 3px rgba(0,0,0,0.1);
-        }}
-        .issues-table th {{
-            background: #fee2e2;
-            color: #991b1b;
-            padding: 12px 15px;
-            text-align: left;
-            font-weight: 600;
-        }}
-        .issues-table.warning-table th {{
-            background: #fef3c7;
-            color: #92400e;
-        }}
-        .issues-table td {{
-            padding: 10px 15px;
-            border-bottom: 1px solid #f3f4f6;
-        }}
-        .issues-table tr:last-child td {{ border-bottom: none; }}
-        .issue-num {{
-            width: 50px;
-            text-align: center;
-            font-weight: bold;
-            color: #ef4444;
-        }}
-        .issues-table.warning-table .issue-num {{ color: #f59e0b; }}
-        .issue-desc {{ color: #374151; }}
-
-        /* 巡检项列表 */
-        .inspection-list-section {{
-            margin-bottom: 20px;
-        }}
-        .block-title {{ color: #1e3a5f; margin: 22px 0 6px; font-size: 18px; font-weight: 700; }}
-        .block-hint {{ color: #64748b; font-size: 13px; margin-bottom: 12px; }}
-        .inspection-accordion {{ display: flex; flex-direction: column; gap: 10px; }}
-        .inspection-item {{ border: 1px solid #e5e7eb; border-radius: 10px; background: #fff; overflow: hidden; transition: border-color .18s ease, box-shadow .18s ease, transform .18s ease; }}
-        .inspection-item:hover {{ border-color: #93c5fd; box-shadow: 0 8px 22px rgba(30, 64, 175, .10); transform: translateY(-1px); }}
-        .inspection-item:hover summary {{ background: #f8fbff; }}
-        .inspection-item summary {{ cursor: pointer; display: grid; grid-template-columns: 48px 88px 190px minmax(260px,1fr) 86px; gap: 12px; align-items: center; padding: 14px 16px; list-style: none; background: #fff; }}
-        .inspection-item summary::-webkit-details-marker {{ display: none; }}
-        .inspection-item[open] summary {{ border-bottom: 1px solid #e5e7eb; }}
-        .inspection-item.status-error summary {{ background: #fff1f2; }}
-        .inspection-item.status-error:hover summary {{ background: #ffe4e6; }}
-        .inspection-item.status-warning summary {{ background: #fff; }}
-        .inspection-item.status-normal summary {{ background: #fff; }}
-        .item-index {{ color: #64748b; font-weight: 700; }}
-        .item-status {{ font-weight: 700; white-space: nowrap; }}
-        .status-error .item-status {{ color: #dc2626; }}
-        .status-warning .item-status {{ color: #d97706; }}
-        .status-normal .item-status {{ color: #059669; }}
-        .item-name {{ color: #1f2937; font-weight: 600; word-break: break-word; }}
-        .item-summary {{ color: #475569; font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }}
-        .expand-tip {{ color: #64748b; font-size: 12px; text-align: right; }}
-        .item-body {{ padding: 16px; }}
-        .key-result-title, .detail-title {{ font-size: 13px; color: #334155; font-weight: 700; margin-bottom: 8px; }}
-        .detail-title {{ margin-top: 14px; }}
-        .key-result-list {{ margin: 0; padding-left: 20px; color: #374151; }}
-        .key-result-list li {{ margin: 5px 0; line-height: 1.6; word-break: break-word; }}
-        .key-result-table {{ width: 100%; border-collapse: collapse; margin: 4px 0 12px; background: white; border: 1px solid #e5e7eb; border-radius: 8px; overflow: hidden; }}
-        .key-result-table th {{ background: #eef2ff; color: #3730a3; text-align: left; padding: 9px 12px; font-size: 13px; }}
-        .key-result-table td {{ border-top: 1px solid #eef2f7; padding: 8px 12px; font-size: 13px; color: #334155; }}
-        .key-result-table td:first-child {{ width: 64px; color: #64748b; text-align: center; }}
-        .key-result-table td:last-child {{ width: 100px; font-weight: 700; color: #dc2626; }}
-        .raw-output {{ margin: 0; background: #0f172a; color: #e2e8f0; border-radius: 8px; padding: 14px; max-height: 360px; overflow: auto; white-space: pre-wrap; word-break: break-word; font-size: 12px; line-height: 1.6; }}
-
-        /* AI分析内容区域 */
-        .ai-content {{
-            background: #f8fafc;
-            border-radius: 12px;
-            padding: 25px;
-            border: 1px solid #e2e8f0;
-        }}
-        .safe-advice {{ background: #fff7ed; color: #9a3412; border-left: 4px solid #f97316; padding: 10px 12px; border-radius: 6px; list-style: none; margin: 8px 0; }}
-        td.safe-advice {{ display: table-cell; }}
-        .ai-content h1 {{ color: #1e3a5f; font-size: 22px; margin: 0 0 20px 0; padding-bottom: 10px; border-bottom: 2px solid #e5e7eb; }}
-        .ai-content h2 {{ color: #374151; font-size: 18px; margin: 20px 0 10px; }}
-        .ai-content h3 {{ color: #4b5563; font-size: 16px; margin: 15px 0 8px; }}
-        .ai-content p {{ margin: 8px 0; line-height: 1.8; color: #374151; }}
-        .ai-content ul, .ai-content ol {{ margin: 10px 0; padding-left: 25px; }}
-        .ai-content li {{ margin: 5px 0; color: #374151; }}
-        .ai-content strong {{ color: #1f2937; }}
-        .ai-content pre {{ background: #1e293b; color: #e2e8f0; padding: 15px; border-radius: 8px; overflow-x: auto; margin: 10px 0; font-size: 13px; line-height: 1.6; border-left: 3px solid #6366f1; }}
-        .ai-content pre code {{ background: transparent; color: #e2e8f0; padding: 0; }}
-        .ai-content code {{ background: #f0f0f0; color: #1f2937; padding: 2px 6px; border-radius: 4px; font-family: monospace; }}
-        .ai-content table {{ width: 100%; border-collapse: collapse; margin: 15px 0; }}
-        .ai-content table th {{ background: #f3f4f6; color: #374151; padding: 10px 12px; text-align: left; font-weight: 600; border-bottom: 2px solid #e5e7eb; }}
-        .ai-content table td {{ padding: 10px 12px; border-bottom: 1px solid #e5e7eb; color: #4b5563; }}
-        .ai-content table tr:hover {{ background: #f9fafb; }}
-        
-        /* AI返回的样式兼容 */
-        .basic-info {{ background: #f8fafc; border-radius: 8px; padding: 15px; margin-bottom: 20px; }}
-        .basic-info table {{ margin: 0; }}
-        .basic-info th {{ background: #e5e7eb; color: #374151; padding: 8px 12px; text-align: left; font-weight: 600; }}
-        .basic-info td {{ padding: 8px 12px; border-bottom: 1px solid #e5e7eb; }}
-        
-        .stats-cards, .stats-card-container {{ display: flex; gap: 15px; margin: 20px 0; flex-wrap: wrap; }}
-        .stats-card {{ flex: 1; min-width: 120px; padding: 15px; border-radius: 8px; text-align: center; }}
-        .stats-card h2 {{ font-size: 14px; margin: 0 0 5px 0; color: #6b7280; font-weight: 500; }}
-        .stats-card p {{ font-size: 28px; font-weight: bold; margin: 0; }}
-        .stats-card-success {{ background: #ecfdf5; border: 1px solid #10b981; }}
-        .stats-card-success p {{ color: #10b981; }}
-        .stats-card-warning {{ background: #fffbeb; border: 1px solid #f59e0b; }}
-        .stats-card-warning p {{ color: #f59e0b; }}
-        .stats-card-danger {{ background: #fef2f2; border: 1px solid #ef4444; }}
-        .stats-card-danger p {{ color: #ef4444; }}
-        
-        .conclusion {{ background: #ecfdf5; border: 2px solid #10b981; border-radius: 8px; padding: 20px; margin-top: 20px; }}
-        .conclusion h2 {{ color: #10b981; margin: 0 0 10px 0; }}
-        .conclusion p {{ margin: 5px 0; color: #374151; }}
-
-        /* AI返回HTML的卡片样式 */
-        .ai-content .card {{ background: #ffffff; border-radius: 12px; padding: 20px; margin-bottom: 20px; box-shadow: 0 1px 3px rgba(0,0,0,0.08); border: 1px solid #e5e7eb; }}
-        .ai-content .card-title {{ font-size: 17px; font-weight: 700; color: #1e3a5f; margin: 0 0 15px 0; padding-bottom: 10px; border-bottom: 2px solid #e0e7ff; }}
-        .ai-content .info-grid {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 12px; }}
-        .ai-content .info-item {{ background: #f8fafc; border-radius: 8px; padding: 12px; }}
-        .ai-content .info-item .label {{ font-size: 12px; color: #6b7280; margin-bottom: 4px; }}
-        .ai-content .info-item .value {{ font-size: 14px; color: #1f2937; font-weight: 600; }}
-        .ai-content .section-sub {{ font-size: 13px; color: #6b7280; margin: -8px 0 12px 0; }}
-        .ai-content .no-data {{ background: #f3f4f6; color: #6b7280; padding: 12px 16px; border-radius: 8px; font-size: 14px; text-align: center; }}
-        .ai-content .sub-title {{ font-size: 15px; font-weight: 600; color: #374151; margin: 16px 0 8px; }}
-        .ai-content .mt-12 {{ margin-top: 12px; }}
-
-        /* AI返回HTML的统计卡片 */
-        .ai-content .stat-card {{ display: inline-block; min-width: 100px; padding: 12px 20px; border-radius: 8px; text-align: center; margin-right: 10px; }}
-        .ai-content .stat-card .num {{ font-size: 28px; font-weight: 800; }}
-        .ai-content .stat-card .label {{ font-size: 13px; margin-top: 4px; }}
-        .ai-content .stat-card.ok {{ background: #ecfdf5; border: 1px solid #10b981; }}
-        .ai-content .stat-card.ok .num {{ color: #10b981; }}
-        .ai-content .stat-card.warn {{ background: #fffbeb; border: 1px solid #f59e0b; }}
-        .ai-content .stat-card.warn .num {{ color: #f59e0b; }}
-        .ai-content .stat-card.error {{ background: #fef2f2; border: 1px solid #ef4444; }}
-        .ai-content .stat-card.error .num {{ color: #ef4444; }}
-
-        /* AI返回HTML的结论区域 */
-        .ai-content .conclusion {{ border-radius: 12px; padding: 20px; margin-top: 20px; }}
-        .ai-content .conclusion .status {{ font-size: 20px; font-weight: 700; color: #ffffff; margin-bottom: 8px; }}
-        .ai-content .conclusion .detail {{ font-size: 14px; color: rgba(255,255,255,0.9); line-height: 1.6; }}
-
-        /* AI返回HTML的表格增强 */
-        .ai-content .card table {{ width: 100%; border-collapse: collapse; margin: 10px 0; }}
-        .ai-content .card table th {{ background: #e0e7ff; color: #3730a3; padding: 10px 14px; text-align: left; font-weight: 600; font-size: 13px; }}
-        .ai-content .card table td {{ padding: 9px 14px; border-bottom: 1px solid #f3f4f6; font-size: 13px; color: #4b5563; }}
-        .ai-content .card table tr:hover {{ background: #f8fafc; }}
-        .ai-content .card table tr:last-child td {{ border-bottom: none; }}
-
-        /* 页脚 */
-        .report-footer {{
-            text-align: center;
-            padding: 20px;
-            color: rgba(255,255,255,0.7);
-            font-size: 12px;
-        }}
-
-        /* 响应式 */
-        @media (max-width: 768px) {{
-            .stats-grid {{ grid-template-columns: repeat(2, 1fr); }}
-            .charts-grid {{ grid-template-columns: 1fr; }}
-            .stats-cards, .stats-card-container {{ flex-direction: column; }}
-            .inspection-item summary {{ grid-template-columns: 36px 72px 1fr; }}
-            .item-summary {{ grid-column: 1 / -1; white-space: normal; }}
-            .expand-tip {{ display: none; }}
-        }}
-    </style>
-</head>
-<body>
-    <div class="container">
-        <div class="report-card">
-            <div class="report-header">
-                <h1>🔍 系统巡检报告</h1>
-                <div class="subtitle">基于人工智能的服务器健康诊断</div>
-            </div>
-            <div class="report-body">
-
-                <!-- 统计卡片 -->
-                <div class="stats-grid">
-                    <div class="stat-card">
-                        <div class="stat-value">{total_items}</div>
-                        <div class="stat-label">检测项目</div>
-                    </div>
-                    <div class="stat-card success">
-                        <div class="stat-value">{normal_count}</div>
-                        <div class="stat-label">正常</div>
-                    </div>
-                    <div class="stat-card warning">
-                        <div class="stat-value">{warning_count}</div>
-                        <div class="stat-label">警告</div>
-                    </div>
-                    <div class="stat-card danger">
-                        <div class="stat-value">{issue_count}</div>
-                        <div class="stat-label">异常</div>
-                    </div>
-                </div>
-
-                <!-- 图表区域 -->
-                <div class="charts-grid" id="chartsSection">
-                    <div class="chart-card">
-                        <h3>📊 健康状态分布</h3>
-                        <div class="chart-container">
-                            <canvas id="pieChart"></canvas>
-                        </div>
-                    </div>
-                    <div class="chart-card">
-                        <h3>📈 问题类型统计</h3>
-                        <div class="chart-container">
-                            <canvas id="barChart"></canvas>
-                        </div>
-                    </div>
-                </div>
-
-                <!-- 问题表格 -->
-                {issues_table_html}
-
-                <!-- 巡检项结果明细 -->
-                {inspection_list_html}
-
-                <!-- AI分析内容 -->
-                <h3 class="block-title">🤖 AI分析与安全建议</h3>
-                <p class="block-hint">以下建议已过滤敏感操作，仅保留低风险排查与变更前确认方向。</p>
-                <div class="ai-content">
-                    {result_html}
-                </div>
-
-            </div>
-        </div>
-        <div class="report-footer">
-            智能巡检报告 · {product} · {timestamp}
-        </div>
-    </div>
-    <script>
-        // 数据
-        const issueCount = {issue_count};
-        const warningCount = {warning_count};
-        const normalCount = Math.max(1, {normal_count});
-
-        // 只有存在问题或警告时才显示图表
-        if (issueCount > 0 || warningCount > 0) {{
-            const chartData = {{
-                normal: normalCount,
-                warning: warningCount,
-                issue: issueCount
-            }};
-
-            // 饼图
-            const pieCtx = document.getElementById('pieChart').getContext('2d');
-            new Chart(pieCtx, {{
-                type: 'pie',
-                data: {{
-                    labels: ['正常', '警告', '异常'],
-                    datasets: [{{
-                        data: [chartData.normal, chartData.warning, chartData.issue],
-                        backgroundColor: ['#10b981', '#f59e0b', '#ef4444'],
-                        borderWidth: 0
-                    }}]
-                }},
-                options: {{
-                    responsive: true,
-                    maintainAspectRatio: false,
-                    plugins: {{
-                        legend: {{ position: 'bottom' }},
-                        tooltip: {{
-                            callbacks: {{
-                                label: function(context) {{
-                                    const total = chartData.normal + chartData.warning + chartData.issue;
-                                    const percentage = total > 0 ? Math.round(context.raw / total * 100) : 0;
-                                    return context.label + ': ' + context.raw + ' (' + percentage + '%)';
-                                }}
-                            }}
-                        }}
-                    }}
-                }}
-            }});
-
-            // 柱状图
-            const barCtx = document.getElementById('barChart').getContext('2d');
-            new Chart(barCtx, {{
-                type: 'bar',
-                data: {{
-                    labels: ['正常', '警告', '异常'],
-                    datasets: [{{
-                        label: '项目数量',
-                        data: [chartData.normal, chartData.warning, chartData.issue],
-                        backgroundColor: ['#10b981', '#f59e0b', '#ef4444'],
-                        borderRadius: 6
-                    }}]
-                }},
-                options: {{
-                    responsive: true,
-                    maintainAspectRatio: false,
-                    plugins: {{
-                        legend: {{ display: false }}
-                    }},
-                    scales: {{
-                        y: {{
-                            beginAtZero: true,
-                            ticks: {{
-                                stepSize: 1,
-                                precision: 0
-                            }}
-                        }}
-                    }}
-                }}
-            }});
-        }} else {{
-            // 没有问题或警告时隐藏图表区域
-            document.getElementById('chartsSection').style.display = 'none';
-        }}
-    </script>
-</body>
-</html>'''
 
     def _open_folder(self, file_path: str):
         """打开文件所在文件夹"""
@@ -4156,13 +3524,10 @@ class InspectionPage(QWidget):
         """
         import re
 
-        _d("FALLBACK", f"INPUT TEXT LENGTH={len(text)}")
-        _d("FALLBACK", f"FIRST 1000 CHARS:\n{text[:1000]}")
 
         # 诊断：检查有哪些 header 模式实际存在于文本中
         for pattern, stype in [(r'📜\s*自定义脚本', 'custom'), (r'📋\s*巡检项', 'builtin'), (r'={3,}', 'separator')]:
             matches = re.findall(pattern, text)
-            _d("FALLBACK", f"Pattern '{pattern}': {len(matches)} matches -> {matches[:3]}")
 
         lines = text.split('\n')
         current_script = None
@@ -4207,110 +3572,6 @@ class InspectionPage(QWidget):
 
         flush()  # 最后 flush
 
-        _d("FALLBACK", f"EXTRACTED builtin: {list(builtin_out.keys())}")
-        _d("FALLBACK", f"EXTRACTED custom: {list(custom_out.keys())}")
-
-    def _run_test_report(self):
-        """
-        测试报告生成：模拟一次完整巡检（无需SSH）。
-        直接构造测试数据并触发导出，【不修改】builtin_outputs / custom_script_outputs，
-        避免覆盖真实巡检结果。
-        """
-        from PyQt6.QtWidgets import QMessageBox
-        import traceback
-
-        _d("TEST", "=== _run_test_report START ===")
-
-        # 模拟的内置检查项输出
-        test_builtin = {
-            "磁盘使用率检查": """Filesystem      Size  Used Avail Use% Mounted on
-/dev/sda1       100G   50G   50G  50% /
-/dev/sda2       200G  150G   50G  75% /home
-tmpfs           1.6G  1.1M  1.6G   1% /dev/shm""",
-            "内存使用情况": """              total        used        free      shared  buff/cache   available
-Mem:           16Gi       8.5Gi       3.2Gi       100Mi       4.2Gi       6.8Gi
-Swap:         2.0Gi          0B       2.0Gi""",
-            "CPU 负载检查": """ 15:32:01 up 100 days,  3:42,  2 users,  load average: 0.52, 0.58, 0.59""",
-            "端口监听检查": """tcp        0      0 0.0.0.0:22              0.0.0.0:*                LISTEN      1234/sshd
-tcp        0      0 0.0.0.0:80              0.0.0.0:*                LISTEN      5678/nginx
-tcp6       0      0 :::22                   :::*                     LISTEN      1234/sshd""",
-            "关键进程检查": """USER       PID %CPU %MEM    VSZ   RSS TTY      STAT START   TIME COMMAND
-root         1  0.0  0.0   1234   567 ?        Ss   Jan01   0:05 systemd
-nginx     9999  5.2  2.1 123456 78901 ?        S    15:30   2:30 nginx""",
-            "系统运行时间": """up 100 days, 3:42, 2 users, load averages: 0.52 0.58 0.59""",
-        }
-
-        # 模拟的自定义脚本输出
-        test_custom = {
-            "安全扫描.sh": """Running security scan...
-Checking vulnerabilities...
-VULNERABILITY: CVE-2024-1234 found in package xyz
-Scan complete: 1 critical issue found""",
-            "健康检查.py": """Health check: OK
-All systems operational.
-CPU: OK | Memory: OK | Disk: OK | Network: OK""",
-            "性能监控.sh": """Performance Monitor Report
-=======================
-CPU Usage: 15%
-Memory Usage: 53%
-Disk I/O: normal
-Network: 120 packets/s""",
-        }
-
-        try:
-            # 1. 清空并重建 output_text（模拟完整巡检输出）
-            self.output_text.clear()
-            self.output_text.append("=" * 60)
-            self.output_text.append("🧪 测试巡检模式（无需SSH连接）")
-            self.output_text.append("=" * 60)
-
-            # 2. 向 output_text 写入测试输出（显示用）
-            for name, output in test_builtin.items():
-                self.output_text.append(f"\n{'='*60}")
-                self.output_text.append(f"📋 巡检项: {name}")
-                self.output_text.append(f"{'='*60}\n")
-                self.output_text.append(output)
-
-            for name, output in test_custom.items():
-                self.output_text.append(f"\n{'='*60}")
-                self.output_text.append(f"📜 自定义脚本: {name}")
-                self.output_text.append(f"{'='*60}\n")
-                self.output_text.append(output)
-
-            self.output_text.append(f"\n{'='*60}")
-            self.output_text.append("🧪 测试巡检完成（模拟数据）")
-            self.output_text.append(f"{'='*60}")
-
-            # 3. 【关键】直接构造 inspection_data，不修改 self.builtin_outputs / self.custom_script_outputs
-            test_output_text = self.output_text.toPlainText()
-            test_inspection_data = {
-                "output": test_output_text,
-                "script_outputs": {
-                    "builtin": dict(test_builtin),   # 独立副本，不覆盖实例属性
-                    "custom": dict(test_custom),     # 独立副本，不覆盖实例属性
-                }
-            }
-
-            _d("TEST", f"Test data built: builtin={list(test_builtin.keys())}, custom={list(test_custom.keys())}")
-            _d("TEST", f"Real builtin_outputs NOT modified (still has {len(self.builtin_outputs)} items)")
-            _d("TEST", f"Real custom_script_outputs NOT modified (still has {len(self.custom_script_outputs)} items)")
-
-            # 4. 直接发送测试数据，不依赖 on_export_clicked
-            self.export_report_clicked.emit(test_inspection_data)
-
-            _d("TEST", "=== _run_test_report END ===")
-            MessageBox("测试报告",
-                f"测试数据已就绪，正在跳转到报告页面...\n\n"
-                f"内置检查项: {len(test_builtin)} 个\n"
-                f"自定义脚本: {len(test_custom)} 个\n\n"
-                f"请在报告页面查看 HTML 报告是否正确显示数据。",
-                self)
-
-        except Exception as e:
-            _d("TEST", f"ERROR: {traceback.format_exc()}")
-            MessageBox("测试报告错误",
-                f"生成测试报告时出错：\n{str(e)}",
-                self)
 
     def set_ssh_client(self, ssh_client):
         """设置 SSH 客户端"""
@@ -4374,8 +3635,6 @@ Network: 120 packets/s""",
         # 从 inspect_list 获取用户选择的巡检项
         selected_items = self._get_checked_inspection_items()
         
-        _d("START", f"start_inspection CALLED. selected_items={len(selected_items)}")
-        print(f"[DEBUG] selected_items names: {[s.get('Name', s.get('name', '?')) for s in selected_items]}")
 
         if not self.ssh_client:
             MessageBox("连接错误", "请先连接到服务器", self)
@@ -4411,8 +3670,6 @@ Network: 120 packets/s""",
                 s['_type'] = 'builtin'
             all_scripts.append(s)
         
-        _d("START", f"all_scripts count: {len(all_scripts)}")
-        print(f"[DEBUG] all_scripts names: {[s.get('Name', s.get('name', '?')) for s in all_scripts]}")
 
         if not all_scripts:
             MessageBox("选择错误", "请至少选择一个巡检项", self)
@@ -4554,10 +3811,8 @@ Network: 120 packets/s""",
 
     def on_script_item_completed(self, script_name: str, success: bool, error_msg: str):
         """单个巡检项完成，高亮显示"""
-        _d("COMPLETE", f"on_script_item_completed: script={script_name}, success={success}")
         if script_name in self.list_item_for_script:
             item = self.list_item_for_script[script_name]
-            _d("COMPLETE", f"  Found item: {item.text()}")
             # 标记为已完成 - 使用UserRole存储状态
             item.setData(Qt.ItemDataRole.UserRole, "completed" if success else "failed")
             item.setToolTip("巡检完成" if success else (error_msg or "巡检失败"))
@@ -4578,10 +3833,8 @@ Network: 120 packets/s""",
             self.output_list.repaint()
             # 自动滚动到当前项
             self.output_list.scrollToItem(item)
-            _d("COMPLETE", f"  Highlight applied for {script_name}")
         else:
-            _d("COMPLETE", f"  ERROR: item not found for {script_name}")
-            _d("COMPLETE", f"  Available keys: {list(self.list_item_for_script.keys())}")
+            pass
     
     def on_all_output_received(self, key: str, output: str):
         """处理总输出"""
@@ -4605,10 +3858,8 @@ Network: 120 packets/s""",
                             cur = self.custom_script_outputs.get(k, "")
                             if v and (not cur or len(str(v)) >= len(str(cur))):
                                 self.custom_script_outputs[k] = v
-                    _d("ALL_OUTPUT", f"builtin_outputs now: {self.builtin_outputs}")
-                    _d("ALL_OUTPUT", f"custom_script_outputs now: {self.custom_script_outputs}")
             except Exception as e:
-                _d("ALL_OUTPUT", f"Failed to parse output: {e}")
+                pass
     
     def on_script_output_received(self, script_name: str, line: str):
         """处理单个脚本的输出行"""
@@ -4644,11 +3895,8 @@ Network: 120 packets/s""",
             tab = self.custom_script_tabs[script_name]
             tab.append(line)
 
-        # Debug: log first line of each new script
         if line and script_name not in self.builtin_outputs and script_name not in self.custom_script_outputs:
             dest = "builtin_outputs" if script_type == "builtin" else "custom_script_outputs"
-            _d("SCRIPT_OUTPUT",
-               f"FIRST LINE: script={script_name} type={script_type} -> {dest}")
     
     def stop_inspection(self):
         """停止巡检"""
@@ -4699,11 +3947,6 @@ Network: 120 packets/s""",
             self._task_summary_emitted = True
             self.inspection_completed.emit(inspection_data)
     
-    def go_to_report_page(self):
-        """跳转到报告导出页面"""
-        self.export_report_clicked.emit({
-            "output": self.output_text.toPlainText()
-        })
     
     def apply_styles(self):
         """应用样式"""

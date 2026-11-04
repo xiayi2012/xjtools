@@ -82,10 +82,10 @@ def test_root_switch_result_updates_only_on_success(qtbot, monkeypatch, server, 
     window.product_page.set_connected_server(server['id'])
     window.connection_info = {'username': 'tester'}
     commands = []
-    def execute(command):
-        commands.append(command)
-        return (0, 'root\n', '') if outcome == 'success' else (1, '', 'denied')
-    window.ssh_client = SimpleNamespace(execute=execute, disconnect=lambda: None)
+    def enable_sudo(password):
+        commands.append(password)
+        return (True, '') if outcome == 'success' else (False, 'denied')
+    window.ssh_client = SimpleNamespace(enable_sudo=enable_sudo, disconnect=lambda: None)
     monkeypatch.setattr(connection_page, 'RootPasswordDialog', lambda parent: SimpleNamespace(
         exec=lambda: QDialog.DialogCode.Rejected if outcome == 'cancelled' else QDialog.DialogCode.Accepted,
         get_password=lambda: 'test-password'))
@@ -98,5 +98,6 @@ def test_root_switch_result_updates_only_on_success(qtbot, monkeypatch, server, 
         assert window.product_page.is_root == (outcome == 'success')
         assert window.product_page.product_sections[0].server_items[0].root_action.isEnabled() == (outcome != 'success')
         assert bool(commands) == (outcome != 'cancelled')
+        assert window.connection_info['username'] == 'tester'
     finally:
         window._force_quit = True

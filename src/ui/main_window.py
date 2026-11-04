@@ -23,7 +23,7 @@ from qfluentwidgets import (
 )
 from qfluentwidgets import FluentIcon as FIF
 
-from .product_page import ProductPage
+from .product_page import ProductPage, decrypt_password
 from .home_page import HomePage
 from .inspection_page import InspectionPage, ExportReportWorker
 from .batch_inspection_page import BatchInspectionPage
@@ -38,11 +38,6 @@ from src.scripts.loader import get_loader
 from scripts.inspection_catalog import get_builtin_checks, format_check_output, classify_output
 
 from pathlib import Path
-import base64
-import hashlib
-from cryptography.fernet import Fernet
-from cryptography.hazmat.primitives import hashes
-from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
 
 from utils import get_config_dir as _get_config_dir, get_ai_config_path, normalize_ai_configs
 
@@ -51,40 +46,8 @@ def get_config_dir() -> Path:
     return Path(_get_config_dir())
 
 
-def get_encryption_key() -> bytes:
-    config_dir = get_config_dir()
-    config_dir.mkdir(exist_ok=True)
-    key_file = config_dir / ".key"
-    
-    if key_file.exists():
-        return key_file.read_bytes()
-    
-    salt = hashlib.sha256(os.environ.get('COMPUTERNAME', 'default').encode()).digest()[:16]
-    kdf = PBKDF2HMAC(
-        algorithm=hashes.SHA256(),
-        length=32,
-        salt=salt,
-        iterations=100000,
-    )
-    machine_id = os.environ.get('COMPUTERNAME', 'default')
-    key = base64.urlsafe_b64encode(kdf.derive(machine_id.encode()))
-    
-    key_file.write_bytes(key)
-    
-    return key
 
 
-def decrypt_password(encrypted: str) -> str:
-    """解密密码"""
-    try:
-        key = get_encryption_key()
-        f = Fernet(key)
-        return f.decrypt(base64.urlsafe_b64decode(encrypted.encode())).decode()
-    except Exception:
-        try:
-            return base64.b64decode(encrypted.encode()).decode()
-        except Exception:
-            return ""
 
 
 class ScheduledInspectionWorker(QThread):
@@ -514,8 +477,12 @@ class MainWindow(FluentWindow):
         self.raise_()
         self.activateWindow()
 
+    def _has_shutdown_work(self):
+        return (self._has_active_device_task() or bool(self.operation_router.pending)
+                or any(worker and worker.isRunning() for worker in (self.connection_worker, self.scheduled_worker)))
+
     def exit_from_tray(self):
-        if self._has_active_device_task():
+        if self._has_shutdown_work():
             QMessageBox.warning(self, '任务仍在运行', '请先停止正在运行的巡检或运维任务，再退出程序。')
             return
         self._force_quit = True
@@ -524,12 +491,15 @@ class MainWindow(FluentWindow):
         QApplication.quit()
 
     def closeEvent(self, event):
+        if not self._force_quit and not self.tray_icon and self._has_shutdown_work():
+            QMessageBox.warning(self, '任务仍在运行', '任务结束后再退出。')
+            event.ignore()
+            return
         if self._force_quit or not self.tray_icon:
             event.accept()
             return
         event.ignore()
         self.hide()
-        self.tray_icon.showMessage("AI智能运维", "程序已最小化到托盘，右键托盘图标可退出。", QSystemTrayIcon.MessageIcon.Information, 2500)
 
     def reload_scheduled_inspections(self):
         """定时巡检配置更新后立即重新检查一次。"""
@@ -1003,32 +973,21 @@ class MainWindow(FluentWindow):
             QMessageBox.warning(self, "连接失败", message)
     
     def after_connect_switch_root(self):
-        """连接后自动切换root"""
         from .connection_page import RootPasswordDialog, QDialog as QtQDialog
-        
         dialog = RootPasswordDialog(self)
-        
-        if dialog.exec() == QtQDialog.DialogCode.Accepted:
-            root_password = dialog.get_password()
-            
-            if self.ssh_client and hasattr(self.ssh_client, 'execute'):
-                try:
-                    cmd = f'echo "{root_password}" | sudo -S whoami 2>/dev/null'
-                    return_code, output, error = self.ssh_client.execute(cmd)
-                    
-                    if return_code == 0 and output.strip() == 'root':
-                        QMessageBox.information(self, "切换成功", "已成功切换到root用户")
-                        self.is_root = True
-                        # 更新连接信息的用户名为root
-                        if self.connection_info:
-                            self.connection_info['username'] = 'root'
-                        # 保持当前设备的 root 状态，菜单项置灰而非隐藏。
-                        self.product_page.set_connected_server(self.product_page.connected_server_id, is_root=True)
-                    else:
-                        QMessageBox.warning(self, "切换失败", "无法切换到root用户，请检查密码")
-                except Exception as e:
-                    QMessageBox.warning(self, "切换失败", f"切换root时出错: {str(e)}")
-    
+        if dialog.exec() != QtQDialog.DialogCode.Accepted:
+            return
+        if not self.ssh_client or not hasattr(self.ssh_client, 'enable_sudo'):
+            QMessageBox.warning(self, '无法启用 root 命令', '当前连接不支持 sudo 命令模式')
+            return
+        ok, error = self.ssh_client.enable_sudo(dialog.get_password())
+        if not ok:
+            QMessageBox.warning(self, '无法启用 root 命令', error)
+            return
+        self.is_root = True
+        self.connection_info['effective_user'] = 'root'
+        self.product_page.set_connected_server(self.product_page.connected_server_id, is_root=True)
+
     def on_server_disconnect_request(self, server: dict):
         """处理服务器断开请求"""
         self.disconnect_and_go_home()
@@ -1158,20 +1117,6 @@ class MainWindow(FluentWindow):
         if server.get('id') == self.product_page.connected_server_id and self.is_connected:
             self.product_page.show_device_inspection(self.device_inspection_page, server)
     
-    def on_inspection_items_confirmed(self, inspection_config: dict):
-        """巡检项确认处理"""
-        scripts = inspection_config.get("scripts", [])
-        custom_scripts = inspection_config.get("custom_scripts", [])
-        product_scripts = inspection_config.get("product_scripts", [])
-        
-        if self.ssh_client:
-            self.inspection_page.set_ssh_client(self.ssh_client)
-            self.log_extract_page.set_ssh_client(self.ssh_client)
-        
-        self.inspection_page.set_product(self.selected_product_name)
-        self.log_extract_page.set_product(self.selected_product_name)
-        self.inspection_page.set_inspection_config(scripts, custom_scripts, product_scripts)
-        self.switch_page(2)  # 一键巡检在索引2
     
     def setCustomBackgroundColor(self, light, dark):
         """设置自定义背景色"""

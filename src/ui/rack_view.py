@@ -14,6 +14,7 @@ from qfluentwidgets import FluentIcon as FIF
 
 from core.rack_inventory import partition_devices
 from .hardware_art import draw_cabinet, draw_server, EmptyRackIllustration
+from .hardware_motion import MotionValue
 
 UNIT_PITCH = 30
 DEVICE_MIME = 'application/x-xjtools-device'
@@ -173,18 +174,11 @@ class RackFace(QFrame):
         self.setObjectName('rackFace')
         self.setFixedWidth(310)
         self.setStyleSheet('''
-            QFrame#rackFace {background:#26343e; border:2px solid #17232b; border-radius:7px;}
-            QLabel {color:#9baeb9; background:transparent; font:11px 'Consolas';}
-            QPushButton[empty="true"] {background:#1e2a32; color:#72838d; border:1px solid #34434d;
+            QFrame#rackFace {background:#e4edf3; border:2px solid #afc2d0; border-radius:7px;}
+            QLabel {color:#7893a5; background:transparent; font:11px 'Consolas';}
+            QPushButton[empty="true"] {background:#f1f6f9; color:#97adbd; border:1px solid #cbd9e3;
                 border-radius:2px; text-align:center; font-size:10px; padding:0;}
-            QPushButton[empty="true"]:hover {background:#314d55; color:#a1eee0; border-color:#50c9c3;}
-            QPushButton[device="true"] {color:#e7eff3; background:qlineargradient(x1:0,y1:0,x2:0,y2:1,
-                stop:0 #52616c,stop:0.5 #384953,stop:1 #2f3f49); border:1px solid #788b97;
-                border-left:5px solid #96a8b1; border-right:5px solid #96a8b1; border-radius:3px;
-                text-align:left; font:11px 'Microsoft YaHei'; padding:2px 8px;}
-            QPushButton[device="true"]:hover {border-color:#50c9c3; background:#3c5861;}
-            QPushButton[matched="true"] {border-color:#e4ba67; color:#ffedbf;}
-            QPushButton[device="true"]:checked {border-color:#50c9c3; background:#264e54; color:#c6fff5;}
+            QPushButton[empty="true"]:hover {background:#e0f2ed; color:#288f7e; border-color:#72bfae;}
         ''')
         layout = QGridLayout(self)
         layout.setContentsMargins(8, 12, 8, 12)
@@ -321,12 +315,61 @@ class RackDeviceButton(QPushButton):
         super().__init__(parent)
         self.server = server or {}
         self.connected = False
-        self.device_state = ''
+        self._device_state = ''
+        self.hover_motion = MotionValue(self)
+        self.selection_motion = MotionValue(self)
+        self.activity_motion = MotionValue(self)
+        self.arrival_motion = MotionValue(self, 1.0, 260)
+        self._arrival_pending = False
+        self.toggled.connect(lambda selected: self.selection_motion.animate_to(float(selected)))
         self.page = page
         self.press_position = None
         self.drag_started = False
         self.setCheckable(True)
         self.setCursor(Qt.CursorShape.PointingHandCursor)
+
+    @property
+    def device_state(self):
+        return self._device_state
+
+    @device_state.setter
+    def device_state(self, state):
+        if state == self._device_state:
+            return
+        self._device_state = state
+        self.activity_motion.stop()
+        self.activity_motion.level = 0
+        if self.isVisible() and state in ('连接中', '巡检中'):
+            self.activity_motion.breathe()
+        self.update()
+
+    def enterEvent(self, event):
+        self.hover_motion.animate_to(1)
+        super().enterEvent(event)
+
+    def leaveEvent(self, event):
+        self.hover_motion.animate_to(0)
+        super().leaveEvent(event)
+
+    def reveal(self):
+        self._arrival_pending = True
+        self.arrival_motion.level = 0
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        if self._arrival_pending:
+            self._arrival_pending = False
+            self.arrival_motion.animate_to(1)
+        if self.device_state in ('连接中', '巡检中'):
+            self.activity_motion.breathe()
+
+    def hideEvent(self, event):
+        for motion in (self.hover_motion, self.selection_motion, self.activity_motion, self.arrival_motion):
+            motion.stop()
+        self.hover_motion.level = 0
+        self.selection_motion.level = float(self.isChecked())
+        self.arrival_motion.level = 1
+        super().hideEvent(event)
 
     def mousePressEvent(self, event):
         self.drag_started = False
@@ -374,9 +417,11 @@ class RackDeviceButton(QPushButton):
 
     def paintEvent(self, event):
         painter = QPainter(self)
+        painter.setOpacity(.4 + .6 * self.arrival_motion.level)
+        painter.translate(0, (1 - self.arrival_motion.level) * -5)
         draw_server(painter, QRectF(self.rect()), self.server.get('name') or self.server.get('host', '服务器'),
                     self.server.get('host', ''), self.connected, self.isChecked(), self.underMouse() or self.hasFocus(),
-                    self.device_state)
+                    self.device_state, self.hover_motion.level, self.selection_motion.level, self.activity_motion.level)
         if self.property('matched'):
             painter.setBrush(Qt.BrushStyle.NoBrush)
             painter.setPen(QPen(QColor('#e4ba67'), 2))
@@ -475,6 +520,9 @@ class RackView(QWidget):
             face = RackFace(rack, servers, page=page)
             for server in servers:
                 button = face.device_buttons[server['id']]
+                if page._pending_arrival_id == server['id']:
+                    button.reveal()
+                    page._pending_arrival_id = None
                 button.setProperty('matched', bool(query and matches(server)))
                 button.style().unpolish(button)
                 button.style().polish(button)
@@ -493,10 +541,10 @@ class RackView(QWidget):
                 empty_copy = QVBoxLayout()
                 empty_copy.setSpacing(12)
                 empty_copy.addStretch()
-                empty_title = plain_label('开始布置机柜')
+                empty_title = plain_label('暂无机柜')
                 empty_title.setStyleSheet('font-size:16px; font-weight:600; color:#2c4a59;')
                 empty_copy.addWidget(empty_title)
-                caption = plain_label('将待上架服务器拖入左侧机柜，\n自动创建 42U 机柜并从 U01 上架。')
+                caption = plain_label('拖入设备即可创建 42U 机柜。')
                 caption.setStyleSheet('font-size:11px; color:#81949f;')
                 empty_copy.addWidget(caption)
                 create = QPushButton('创建第一个机柜')
@@ -522,7 +570,7 @@ class RackView(QWidget):
             dock_title.setProperty('sectionTitle', True)
             dock_header.addWidget(dock_title)
             dock_header.addStretch()
-            hint = plain_label('按住设备拖入机柜')
+            hint = plain_label('拖动设备上架')
             hint.setProperty('muted', True)
             dock_header.addWidget(hint)
             pending_layout.addLayout(dock_header)
@@ -601,10 +649,6 @@ class RackView(QWidget):
             title.setAlignment(Qt.AlignmentFlag.AlignCenter)
             title.setStyleSheet('font-size:14px; font-weight:600; color:#486574;')
             self.detail_layout.addWidget(title)
-            hint = plain_label('点击服务器查看设备信息\n和可用的运维操作')
-            hint.setAlignment(Qt.AlignmentFlag.AlignCenter)
-            hint.setStyleSheet('font-size:11px; color:#8b9da7;')
-            self.detail_layout.addWidget(hint)
             self.detail_layout.addStretch()
             return
         from .product_page import ServerDetailItem

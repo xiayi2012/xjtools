@@ -1,4 +1,4 @@
-﻿"""
+"""
 AI 排障页面模块
 实现知识库问答和AI智能排障功能
 """
@@ -1355,7 +1355,6 @@ class KnowledgeBaseManagerDialog(QDialog):
             
             with open(config_file, 'w', encoding='utf-8') as f:
                 json.dump(all_faqs, f, indent=2, ensure_ascii=False)
-            print(f"[DEBUG] save_faqs: saved {len(self.faqs)} FAQs for {self.current_product}, total {len(all_faqs)} FAQs")
             
             # 发出信号通知界面刷新
             self.knowledge_base_updated.emit()
@@ -1608,7 +1607,6 @@ class KnowledgeBaseManagerDialog(QDialog):
         
         if reply == QMessageBox.StandardButton.Yes:
             removed_faq = self.faqs.pop(faq_index)
-            print(f"[DEBUG] Deleted FAQ: {removed_faq.get('question', '')[:50]}")
             self.save_faqs()
             self.load_faqs()
             QMessageBox.information(self, "删除成功", "知识库已删除")
@@ -2518,24 +2516,19 @@ class AITroubleshootPage(QWidget):
         """加载FAQ知识库 - 按产品过滤"""
         config_file = Path(get_config_dir()) / "faqs.json"
         
-        print(f"[DEBUG] load_faqs: current_product={self.current_product}")
         
         if config_file.exists():
             try:
                 with open(config_file, 'r', encoding='utf-8') as f:
                     data = json.load(f)
                     
-                    print(f"[DEBUG] load_faqs: data type={type(data).__name__}")
                     
                     # 检查是否是按产品组织的字典 {"产品A": [...], "产品B": [...]}
                     if isinstance(data, dict):
-                        print(f"[DEBUG] load_faqs: dict keys={list(data.keys())}")
                         if self.current_product and self.current_product in data:
                             self.faqs = data[self.current_product]
-                            print(f"[DEBUG] load_faqs: matched product, count={len(self.faqs)}")
                         elif "通用" in data:
                             self.faqs = data["通用"]
-                            print(f"[DEBUG] load_faqs: fallback to 通用, count={len(self.faqs)}")
                         else:
                             # 合并所有产品的FAQ
                             all_faqs = []
@@ -2543,19 +2536,15 @@ class AITroubleshootPage(QWidget):
                                 if isinstance(product_faqs, list):
                                     all_faqs.extend(product_faqs)
                             self.faqs = all_faqs
-                            print(f"[DEBUG] load_faqs: merged all, count={len(self.faqs)}")
                     elif isinstance(data, list):
-                        print(f"[DEBUG] load_faqs: list length={len(data)}")
                         # 按产品过滤FAQ
                         if self.current_product:
                             # 显示匹配产品的FAQ
                             product_faqs = [f for f in data if f.get('product', '') == self.current_product]
-                            print(f"[DEBUG] load_faqs: product_faqs count={len(product_faqs)}")
                             self.faqs = product_faqs
                         else:
                             # 没有选择产品时，显示全部FAQ
                             self.faqs = data
-                            print(f"[DEBUG] load_faqs: no product filter, showing all")
                     else:
                         self.faqs = []
             except Exception as e:
@@ -2563,7 +2552,6 @@ class AITroubleshootPage(QWidget):
                 self.faqs = []
         else:
             self.faqs = []
-            print(f"[DEBUG] load_faqs: config file not exists")
         
         # 更新状态标签
         if hasattr(self, 'status_label'):
@@ -2590,7 +2578,6 @@ class AITroubleshootPage(QWidget):
             
             with open(config_file, 'w', encoding='utf-8') as f:
                 json.dump(all_faqs, f, indent=2, ensure_ascii=False)
-            print(f"[DEBUG] save_faqs: saved {len(self.faqs)} FAQs for {self.current_product}, total {len(all_faqs)} FAQs")
         except Exception as e:
             print(f"[ERROR] save_faqs: {e}")
     
@@ -4510,7 +4497,6 @@ FAQ列表：
             
             final_score = question_score * 0.5 + keyword_score * 0.25 + keyword_match_rate * 0.25
             
-            print(f"[DEBUG] FAQ match: question='{faq_question[:30]}' score={final_score:.3f} (q={question_score:.3f} kw={keyword_score:.3f} kmr={keyword_match_rate:.3f})")
             
             if final_score > best_score:
                 best_score = final_score
@@ -5039,7 +5025,7 @@ FAQ列表：
         """动画：添加省略号"""
         if count < 3:
             dots = "." * (count + 1)
-            base_text = label.property("loadingBaseText") or "AI思考中"
+            base_text = label.property("loadingBaseText") or "正在分析"
             if "\n" in base_text:
                 first_line, rest = base_text.split("\n", 1)
                 label.setText(f"{first_line}{dots}\n{rest}")
@@ -5053,8 +5039,8 @@ FAQ列表：
         if configs:
             model_name = configs[0].get("model") or configs[0].get("name")
             if model_name:
-                return f"AI思考中\n当前使用模型：{model_name}"
-        return "AI思考中"
+                return f"正在分析\n当前使用模型：{model_name}"
+        return "正在分析"
     
     def _add_chat_message(self, message: str, is_user: bool):
         """添加聊天消息"""

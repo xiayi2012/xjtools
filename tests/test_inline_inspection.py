@@ -16,11 +16,11 @@ def test_device_inspection_stays_in_device_management(window, monkeypatch, qtbot
     window.on_device_operation(server, 'inspection')
     assert calls == ['start']
     assert window.stackedWidget.currentWidget() is window.product_page
-    assert window.product_page.inline_inspection.isVisibleTo(window.product_page)
+    assert window.product_page.inspection_dialog.isVisibleTo(window.product_page)
     assert '192.0.2.2' in window.product_page.inspection_context.text()
     window.product_page.close_device_inspection()
     assert window.product_page.scroll_area.isVisibleTo(window.product_page)
-    assert not window.product_page.inline_inspection.isVisibleTo(window.product_page)
+    assert not window.product_page.inspection_dialog.isVisibleTo(window.product_page)
 
 
 def test_return_to_running_inspection_does_not_restart(window, monkeypatch):
@@ -34,7 +34,7 @@ def test_return_to_running_inspection_does_not_restart(window, monkeypatch):
     monkeypatch.setattr(window.device_inspection_page, 'start_inspection', lambda: calls.append('start'))
     window.on_device_operation(server, 'inspection')
     assert calls == []
-    assert window.product_page.inline_inspection.isVisibleTo(window.product_page)
+    assert window.product_page.inspection_dialog.isVisibleTo(window.product_page)
     assert window._has_active_device_task()
 
 
@@ -46,7 +46,7 @@ def test_other_entry_task_never_opens_stale_inline_results(window):
     window.device_inspection_page.task_device = server
     window.inspection_page.inspection_worker = SimpleNamespace(isRunning=lambda: True)
     window.on_device_operation(server, 'inspection')
-    assert window.product_page.inline_inspection is None
+    assert window.product_page.inspection_dialog is None
 
 
 def test_sidebar_cannot_start_second_task(window, monkeypatch):

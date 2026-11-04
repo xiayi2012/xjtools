@@ -18,8 +18,6 @@ with redirect_stdout(io.StringIO()):
     from qfluentwidgets import setThemeColor
     from ui.main_window import MainWindow
 
-print("欢迎使用AI智能巡检排障工具")
-
 __author__ = "xiayi"
 __hidden_credit__ = "by xiayi"
 

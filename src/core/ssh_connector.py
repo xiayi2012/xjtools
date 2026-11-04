@@ -12,6 +12,8 @@ from paramiko.ssh_exception import (
     BadAuthenticationType
 )
 import time
+import shlex
+import codecs
 import socket
 from typing import Optional, Tuple, Generator, Callable, List
 from pathlib import Path
@@ -27,6 +29,7 @@ class SSHClientWrapper:
         self.is_connected: bool = False
         self._host: str = ""
         self._port: int = 22
+        self._sudo_password = None
         self._stop_requested: bool = False  # 停止请求标志
         self._connect_params: dict = {}
         self._use_otp_connection: bool = False
@@ -64,6 +67,11 @@ class SSHClientWrapper:
             Tuple[bool, str]: (是否成功, 消息)
         """
         try:
+            identity = (host, port, username)
+            old_identity = tuple(self._connect_params.get(k) for k in ('host', 'port', 'username'))
+            sudo_password = self._sudo_password if identity == old_identity else None
+            self.disconnect()
+            self._sudo_password = sudo_password
             self.client = paramiko.SSHClient()
             self.client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
             
@@ -95,7 +103,6 @@ class SSHClientWrapper:
             for attempt in range(max_retries):
                 try:
                     if attempt > 0:
-                        print(f"[DEBUG] SSH连接重试 {attempt + 1}/{max_retries}")
                         time.sleep(1)
                         # 重新创建客户端
                         self.client = paramiko.SSHClient()
@@ -123,7 +130,6 @@ class SSHClientWrapper:
                 except OSError as e:
                     # Windows socket 错误 (WinError 10038 等)
                     if sys.platform == "win32" and attempt < max_retries - 1:
-                        print(f"[DEBUG] Windows socket错误，重试: {str(e)}")
                         continue
                     raise
             
@@ -172,10 +178,8 @@ class SSHClientWrapper:
         Returns:
             Tuple[bool, str]: (是否成功, 消息)
         """
+        self.disconnect()
         try:
-            print(f"[DEBUG] connect_with_otp_callback called")
-            print(f"[DEBUG] host={host}, username={username}, has_password={bool(password)}")
-            print(f"[DEBUG] has_otp_callback={bool(otp_challenge_callback)}")
             
             # 创建 SSH 客户端
             self.client = paramiko.SSHClient()
@@ -200,15 +204,12 @@ class SSHClientWrapper:
                 return False, "必须提供密码或 SSH 私钥"
             
             # 先尝试普通密码连接
-            print(f"[DEBUG] Attempting password authentication...")
             try:
                 self.client.connect(**connect_kwargs)
                 transport = self.client.get_transport()
                 if transport:
                     transport.set_keepalive(15)
-                print(f"[DEBUG] Password auth succeeded, checking for OTP challenge...")
             except AuthenticationException as e:
-                print(f"[DEBUG] Password auth failed: {e}")
                 return False, f"密码认证失败：{str(e)}"
             
             # 密码认证成功，检查是否需要OTP验证
@@ -227,7 +228,6 @@ class SSHClientWrapper:
             self._otp_challenge_callback = otp_challenge_callback
             
             if otp_challenge_callback:
-                print(f"[DEBUG] Checking for OTP challenge from server...")
                 otp_result = self._handle_post_auth_otp(otp_challenge_callback, timeout)
                 
                 if not otp_result[0]:
@@ -236,9 +236,9 @@ class SSHClientWrapper:
                 
                 # 检查是否需要使用shell执行
                 if "使用shell执行" in otp_result[1]:
-                    print(f"[DEBUG] OTP completed, will use shell-based command execution")
+                    pass
                 else:
-                    print(f"[DEBUG] OTP verification completed, connection ready")
+                    pass
             
             # 最终验证连接状态
             transport = self.client.get_transport() if self.client else None
@@ -249,7 +249,6 @@ class SSHClientWrapper:
             # 确保is_connected状态正确
             self.is_connected = True
             
-            print(f"[DEBUG] Connection fully established and verified")
             return True, f"成功连接到 {host}:{port}（OTP验证完成）"
             
         except AuthenticationException:
@@ -282,7 +281,6 @@ class SSHClientWrapper:
         import time
         
         try:
-            print(f"[DEBUG] Creating channel for OTP challenge...")
             
             # 使用exec_command执行一个简单的命令来触发OTP提示
             # 某些服务器会在执行命令时要求OTP
@@ -295,13 +293,11 @@ class SSHClientWrapper:
                 if stdout.channel.exit_status_ready():
                     output = stdout.read().decode('utf-8', errors='ignore')
                     if "otp_check" in output:
-                        print(f"[DEBUG] No OTP required, command succeeded")
                         return True, ""
             except Exception as e:
-                print(f"[DEBUG] exec_command attempt: {e}")
+                pass
             
             # 如果上面没触发OTP，使用invoke_shell
-            print(f"[DEBUG] Using invoke_shell for OTP challenge...")
             channel = self.client.invoke_shell()
             channel.settimeout(timeout)
             
@@ -316,7 +312,6 @@ class SSHClientWrapper:
                 if channel.recv_ready():
                     chunk = channel.recv(4096).decode('utf-8', errors='ignore')
                     challenge_data += chunk
-                    print(f"[DEBUG] Received chunk: {repr(chunk[:100])}...")
                     
                     # 检查是否收到了OTP提示
                     if any(keyword in challenge_data.lower() for keyword in 
@@ -330,16 +325,13 @@ class SSHClientWrapper:
                 
                 # 检查是否已经进入shell（不需要OTP）
                 if any(prompt in challenge_data for prompt in ["$ ", "# ", ">", "~$"]):
-                    print(f"[DEBUG] Shell ready, no OTP challenge detected")
                     channel.close()
                     return True, ""
                 
                 time.sleep(1)
             
-            print(f"[DEBUG] Challenge data: {repr(challenge_data)}")
             
             if not otp_detected and not challenge_data:
-                print(f"[DEBUG] No OTP challenge detected after timeout")
                 channel.close()
                 # 不认为是错误，可能是OTP已经完成或不需要
                 return True, ""
@@ -352,7 +344,6 @@ class SSHClientWrapper:
                 return False, "OTP验证取消"
             
             # 发送OTP密码
-            print(f"[DEBUG] Sending OTP password...")
             channel.send(otp_password + "\n")
             time.sleep(2)
             
@@ -362,7 +353,6 @@ class SSHClientWrapper:
                 chunk = channel.recv(4096).decode('utf-8', errors='ignore')
                 response += chunk
             
-            print(f"[DEBUG] OTP response: {repr(response[:200])}")
             
             # 检查是否验证成功
             if any(fail_msg in response.lower() for fail_msg in 
@@ -378,15 +368,12 @@ class SSHClientWrapper:
             has_shell_prompt = any(prompt in response for prompt in ["$ ", "# ", "~$", "[root@", "root@"])
             
             if has_password_prompt and not has_shell_prompt:
-                print(f"[DEBUG] OTP rejected: password prompt still shown after submission")
                 channel.close()
                 return False, f"OTP验证失败：密码错误或已过期"
             
             # OTP验证成功！
             # 关键问题：每个新shell channel都需要重新OTP验证
             # 解决方案：保留原始OTP验证后的shell channel，用于执行所有命令
-            print(f"[DEBUG] OTP verification completed successfully")
-            print(f"[DEBUG] CRITICAL: Keeping OTP-authenticated shell channel for all commands")
             
             # 保留shell channel不关闭，用于后续命令执行
             self._otp_shell = channel  # 保留OTP验证后的shell
@@ -398,27 +385,23 @@ class SSHClientWrapper:
             while channel.recv_ready():
                 chunk = channel.recv(4096).decode('utf-8', errors='ignore')
                 initial_output += chunk
-            print(f"[DEBUG] Cleared initial shell output: {repr(initial_output[:200])}")
             
             # 测试shell是否可以执行命令
-            print(f"[DEBUG] Testing shell with simple echo command...")
             channel.send(b"echo SHELL_READY\n")
             time.sleep(1)
             test_output = ""
             while channel.recv_ready():
                 chunk = channel.recv(4096).decode('utf-8', errors='ignore')
                 test_output += chunk
-            print(f"[DEBUG] Shell test output: {repr(test_output[:200])}")
             
             if "SHELL_READY" in test_output:
-                print(f"[DEBUG] Shell is working correctly!")
+                pass
             else:
-                print(f"[DEBUG] WARNING: Shell test failed, output doesn't contain SHELL_READY")
+                pass
             
             return True, "OTP验证成功_使用shell执行"
             
         except Exception as e:
-            print(f"[DEBUG] OTP handling error: {e}")
             return False, f"OTP验证异常：{str(e)}"
 
     def _mark_disconnected(self):
@@ -441,7 +424,6 @@ class SSHClientWrapper:
             return None
 
         try:
-            print("[DEBUG] Opening replacement OTP shell on active transport")
             shell = self.client.invoke_shell()
             shell.settimeout(2.0)
             time.sleep(0.5)
@@ -456,7 +438,6 @@ class SSHClientWrapper:
             self.is_connected = True
             return shell
         except Exception as e:
-            print(f"[DEBUG] Failed to open replacement OTP shell: {e}")
             return None
 
     def _reconnect_otp_session(self) -> Tuple[bool, str]:
@@ -464,7 +445,6 @@ class SSHClientWrapper:
         if not self._connect_params or not self._otp_challenge_callback:
             return False, "缺少OTP自动重连参数"
 
-        print("[DEBUG] Reconnecting full OTP session")
         try:
             if self.client:
                 self.client.close()
@@ -489,143 +469,133 @@ class SSHClientWrapper:
 
         if self._use_otp_connection or getattr(self, '_use_shell_execution', False):
             if self._otp_challenge_callback and self._connect_params:
-                print("[DEBUG] OTP SSH transport inactive, trying automatic OTP reconnect")
                 success, message = self._reconnect_otp_session()
                 if success:
                     return True, ""
                 return False, f"连接已断开，OTP自动重连失败：{message}"
             return False, "连接已断开，请重新连接服务器后再执行"
 
-        print("[DEBUG] SSH transport inactive, trying one automatic reconnect")
         params = dict(self._connect_params)
         success, message = self.connect(**params)
         if success:
             return True, ""
         return False, f"连接已断开，自动重连失败：{message}"
     
-    def execute(
-        self,
-        command: str,
-        timeout: int = 60
-    ) -> Tuple[int, str, str]:
-        """
-        执行远程命令
-        
-        Args:
-            command: 要执行的命令
-            timeout: 命令执行超时时间（秒）
-            
-        Returns:
-            Tuple[int, str, str]: (返回码, 标准输出, 标准错误)
-        """
-        print(f"[DEBUG] execute() called: is_connected={self.is_connected}, client={self.client is not None}, use_shell={getattr(self, '_use_shell_execution', False)}")
-        
-        if not self.client:
-            print(f"[DEBUG] execute() failed: client is None")
-            return -1, "", "SSH客户端未初始化"
-        
+    def _open_exec(self, command, timeout, sudo_password=None):
+        password = self._sudo_password if sudo_password is None else sudo_password
+        if password is not None:
+            command = "sudo -S -p '' -- sh -c " + shlex.quote('exec 0</dev/null; ' + command)
+        stdin, stdout, stderr = self.client.exec_command(command, timeout=timeout)
+        try:
+            if password is not None:
+                try:
+                    stdin.write(password + '\n')
+                    stdin.flush()
+                except (OSError, EOFError):
+                    if not stdout.channel.exit_status_ready():
+                        raise
+            stdin.close()
+        except BaseException:
+            stdout.channel.close()
+            raise
+        return stdout.channel
+
+    def _exec_chunks(self, command, timeout, sudo_password=None):
+        channel = None
+        deadline = time.monotonic() + timeout
+        decoders = {key: codecs.getincrementaldecoder('utf-8')(errors='replace') for key in ('stdout', 'stderr')}
+        try:
+            channel = self._open_exec(command, timeout, sudo_password)
+            last_data = time.monotonic()
+            while True:
+                if self._stop_requested:
+                    yield 'error', '命令已停止'
+                    yield 'exit', -1
+                    return
+                if time.monotonic() >= deadline:
+                    yield 'error', '命令执行超时'
+                    yield 'exit', -1
+                    return
+                received = False
+                for key, ready, read in (('stdout', channel.recv_ready, channel.recv),
+                                         ('stderr', channel.recv_stderr_ready, channel.recv_stderr)):
+                    if ready():
+                        received = True
+                        text = decoders[key].decode(read(65535))
+                        if text:
+                            yield key, text
+                if received:
+                    last_data = time.monotonic()
+                if channel.exit_status_ready() and not channel.recv_ready() and not channel.recv_stderr_ready():
+                    for key, decoder in decoders.items():
+                        tail = decoder.decode(b'', final=True)
+                        if tail:
+                            yield key, tail
+                    yield 'exit', channel.recv_exit_status()
+                    return
+                if not received:
+                    if time.monotonic() - last_data >= 1:
+                        yield 'heartbeat', ''
+                        last_data = time.monotonic()
+                    time.sleep(.025)
+        except socket.timeout:
+            yield 'error', '命令执行超时'
+            yield 'exit', -1
+        except Exception as exc:
+            yield 'error', str(exc)
+            yield 'exit', -1
+        finally:
+            if channel is not None:
+                channel.close()
+
+    def enable_sudo(self, password, timeout=15):
+        if getattr(self, '_use_shell_execution', False):
+            return False, '当前交互式连接不支持 sudo 命令模式'
+        if '\n' in password or '\r' in password:
+            return False, '密码不能包含换行符'
         ok, message = self._ensure_active_connection()
         if not ok:
-            print(f"[DEBUG] execute() failed: {message}")
-            return -1, "", message
-        
-        # 对于OTP验证后的服务器，使用shell执行命令
+            return False, message
+        output, errors, code = [], [], -1
+        for kind, data in self._exec_chunks('id -u', timeout, sudo_password=password):
+            if kind == 'stdout': output.append(data)
+            elif kind in ('stderr', 'error'): errors.append(data)
+            elif kind == 'exit': code = data
+        if code == 0 and ''.join(output).strip() == '0':
+            self._sudo_password = password
+            return True, ''
+        self._sudo_password = None
+        return False, ''.join(errors).strip() or '当前账户没有 sudo 权限或密码不正确'
+
+    def execute(self, command: str, timeout: int = 60) -> Tuple[int, str, str]:
+        if not self.client:
+            return -1, '', 'SSH客户端未初始化'
+        ok, message = self._ensure_active_connection()
+        if not ok:
+            return -1, '', message
         if getattr(self, '_use_shell_execution', False):
-            print(f"[DEBUG] execute() using shell-based execution for OTP server")
             return self._execute_via_shell(command, timeout)
-        
-        try:
-            print(f"[DEBUG] execute() calling exec_command: {command[:50]}...")
-            # 对于普通服务器，使用exec_command
-            stdin, stdout, stderr = self.client.exec_command(
-                command,
-                timeout=timeout
-            )
-            
-            # 关闭stdin
-            if stdin:
-                stdin.close()
-            
-            # 设置channel超时
-            stdout.channel.settimeout(min(timeout, 30))
-            stderr.channel.settimeout(5)
-            
-            # 非阻塞方式读取输出
-            output_parts = []
-            error_parts = []
-            start_time = time.time()
-            
-            while True:
-                # 检查超时
-                if time.time() - start_time > timeout:
-                    print(f"[DEBUG] execute() timeout after {timeout}s")
-                    break
-                
-                # 检查命令是否完成
-                if stdout.channel.exit_status_ready():
-                    # 使用 stdout.read() 读取所有剩余输出
-                    try:
-                        remaining = stdout.read().decode('utf-8', errors='ignore')
-                        if remaining:
-                            output_parts.append(remaining)
-                    except Exception as e:
-                        print(f"[DEBUG] execute() read remaining error: {e}")
-                    break
-                
-                # 读取可用数据
-                try:
-                    if stdout.channel.recv_ready():
-                        chunk = stdout.channel.recv(65535).decode('utf-8', errors='ignore')
-                        if chunk:
-                            output_parts.append(chunk)
-                    else:
-                        time.sleep(0.1)
-                except socket.timeout:
-                    continue
-                except Exception as e:
-                    print(f"[DEBUG] execute() recv error: {e}")
-                    break
-            
-            # 读取错误输出
-            try:
-                error = stderr.read().decode('utf-8', errors='ignore')
-            except:
-                error = ""
-            
-            # 获取退出码
-            exit_code = stdout.channel.recv_exit_status()
-            
-            output = ''.join(output_parts)
-            
-            print(f"[DEBUG] execute() result: code={exit_code}, output_len={len(output)}, error_len={len(error)}")
-            return exit_code, output, error
-        except socket.timeout:
-            print(f"[DEBUG] execute() socket timeout")
-            return -1, "", "命令执行超时"
-        except Exception as e:
-            print(f"[DEBUG] execute() error: {e}")
-            return -1, "", str(e)
-    
+        output, errors, code = [], [], -1
+        for kind, data in self._exec_chunks(command, timeout):
+            if kind == 'stdout': output.append(data)
+            elif kind in ('stderr', 'error'): errors.append(data)
+            elif kind == 'exit': code = data
+        return code, ''.join(output), ''.join(errors)
+
     def _execute_via_shell(self, command: str, timeout: int = 60) -> Tuple[int, str, str]:
         """通过OTP验证后的shell执行命令（复用同一个shell）"""
         import time
         import uuid
         
-        print(f"[DEBUG] _execute_via_shell called: command={command[:80]}")
-        print(f"[DEBUG] _use_shell_execution: {getattr(self, '_use_shell_execution', False)}")
-        print(f"[DEBUG] client exists: {self.client is not None}")
-        print(f"[DEBUG] is_connected: {self.is_connected}")
         
         # 清除停止请求
         self._stop_requested = False
         
         # 使用保留的OTP验证后的shell channel
         shell = getattr(self, '_otp_shell', None)
-        print(f"[DEBUG] _otp_shell exists: {shell is not None}, closed: {getattr(shell, 'closed', 'N/A') if shell else 'N/A'}")
         is_new_shell = False
         
         if not shell or (hasattr(shell, 'closed') and shell.closed):
-            print(f"[DEBUG] _execute_via_shell: OTP shell not available, trying OTP session reconnect")
             if self._use_otp_connection and self._otp_challenge_callback:
                 success, message = self._reconnect_otp_session()
                 if not success:
@@ -640,7 +610,6 @@ class SSHClientWrapper:
             if not shell:
                 return -1, "", "OTP Shell已不可用，请重新连接服务器后再执行"
         else:
-            print(f"[DEBUG] Using existing OTP shell")
             if not self._transport_is_active():
                 self._mark_disconnected()
                 if self._use_otp_connection and self._otp_challenge_callback:
@@ -655,12 +624,10 @@ class SSHClientWrapper:
         
         try:
             # 清空shell的输出缓冲区，确保shell处于干净状态
-            print(f"[DEBUG] Clearing shell output buffer...")
             clear_attempts = 0
             while shell.recv_ready() and clear_attempts < 10:
                 try:
                     cleared = shell.recv(4096)
-                    print(f"[DEBUG] Cleared {len(cleared)} bytes from shell buffer")
                     clear_attempts += 1
                 except:
                     break
@@ -679,10 +646,6 @@ class SSHClientWrapper:
             # 使用子 shell 执行命令，隔离环境；避免每条命令启动 login shell 影响交互会话稳定性。
             full_command = f'printf "%s\\n" "{start_marker}"; echo {encoded_cmd} | base64 -d | bash 2>&1; printf "%s\\n" "{end_marker}"'
             
-            print(f"[DEBUG] Sending command to shell...")
-            print(f"[DEBUG] Encoded command: {encoded_cmd[:50]}...")
-            print(f"[DEBUG] Full command: {full_command[:100]}...")
-            print(f"[DEBUG] Is new shell: {is_new_shell}")
             
             # 检查shell是否可用
             if not shell or (hasattr(shell, 'closed') and shell.closed):
@@ -702,7 +665,6 @@ class SSHClientWrapper:
             
             try:
                 shell.send((full_command + "\n").encode())
-                print(f"[DEBUG] Command sent successfully")
             except Exception as send_error:
                 print(f"[ERROR] Failed to send command: {send_error}")
                 if not self._transport_is_active():
@@ -719,7 +681,6 @@ class SSHClientWrapper:
                 if shell:
                     try:
                         shell.send((full_command + "\n").encode())
-                        print(f"[DEBUG] Command sent successfully after shell replacement")
                     except Exception as retry_error:
                         return -1, "", f"命令发送失败：{retry_error}"
                 else:
@@ -733,7 +694,6 @@ class SSHClientWrapper:
             while time.time() - start_time < timeout:
                 # 检查停止请求
                 if self._stop_requested:
-                    print(f"[DEBUG] Stop requested, breaking")
                     # 发送 Ctrl+C 中断命令
                     try:
                         shell.send(b'\x03')
@@ -752,31 +712,26 @@ class SSHClientWrapper:
                         
                         # 调试：记录接收到的数据
                         if len(chunk) > 0:
-                            print(f"[DEBUG] Received chunk ({len(chunk)} chars): {repr(chunk[:100])}")
+                            pass
                         
                         # 检查是否收到结束标记
                         if end_marker in output:
-                            print(f"[DEBUG] End marker found, waiting for remaining output...")
                             # 继续接收2秒的数据，确保获取到所有输出
                             remaining_start = time.time()
                             while time.time() - remaining_start < 2:
                                 if shell.recv_ready():
                                     remaining_chunk = shell.recv(8192).decode('utf-8', errors='ignore')
                                     output += remaining_chunk
-                                    print(f"[DEBUG] Received remaining chunk ({len(remaining_chunk)} chars)")
                                 else:
                                     time.sleep(0.1)
-                            print(f"[DEBUG] Finished collecting output")
                             break
                     else:
                         # 如果超过10秒没有收到数据，检查是否已经完成
                         no_data_time = time.time() - last_recv_time
                         if no_data_time > 10 and start_marker in output:
-                            print(f"[DEBUG] No data for 10 seconds, assuming command completed")
                             break
                         # 如果超过30秒没有收到任何数据，认为命令卡住
                         if no_data_time > 30:
-                            print(f"[DEBUG] No data for 30 seconds, assuming command hung")
                             # 发送 Ctrl+C 中断命令
                             try:
                                 shell.send(b'\x03')
@@ -788,7 +743,6 @@ class SSHClientWrapper:
                             return -1, output, "命令执行超时（30秒无响应）"
                         time.sleep(0.1)
                 except Exception as recv_error:
-                    print(f"[DEBUG] Recv error: {recv_error}")
                     # 检查是否是超时
                     if "timeout" in str(recv_error).lower():
                         if time.time() - last_recv_time > 10:
@@ -805,8 +759,6 @@ class SSHClientWrapper:
                             return -1, output, "连接已断开，请重新连接服务器后再执行"
                         raise
             
-            print(f"[DEBUG] Raw output length: {len(output)}")
-            print(f"[DEBUG] Raw output sample: {repr(output[:500])}")
             
             # 提取开始和结束marker之间的内容
             # 使用rfind找到最后一个start_marker，避免shell回显中的marker
@@ -817,7 +769,6 @@ class SSHClientWrapper:
                 if last_end_idx != -1:
                     output = output[:last_end_idx]
             
-            print(f"[DEBUG] After marker extraction: {len(output)} chars")
             
             # 清理输出（移除命令回显和提示符）
             lines = output.split('\n')
@@ -882,19 +833,13 @@ class SSHClientWrapper:
             clean_output = '\n'.join(clean_lines).strip()
             
             # 调试：显示清理前后的输出对比
-            print(f"[DEBUG] Raw output length: {len(output)}")
-            print(f"[DEBUG] Raw output lines: {len(lines)}")
-            print(f"[DEBUG] Clean output length: {len(clean_output)}")
-            print(f"[DEBUG] Clean output lines: {len(clean_lines)}")
             
             # 显示被过滤掉的行
             filtered_count = len(lines) - len(clean_lines) - 1  # 减1是因为split会产生额外空行
             if filtered_count > 0:
-                print(f"[DEBUG] Filtered out {filtered_count} lines")
                 # 显示被过滤的行示例
                 for i, line in enumerate(lines):
                     if line.strip() and line.strip() not in clean_output:
-                        print(f"[DEBUG] Filtered line {i}: {repr(line[:100])}")
                         if i > 5:  # 只显示前5个被过滤的行
                             break
             
@@ -903,17 +848,14 @@ class SSHClientWrapper:
                 print(f"[WARNING] Clean output is empty but raw output is not. Using raw output.")
                 clean_output = output.strip()
             
-            print(f"[DEBUG] _execute_via_shell result: output_len={len(clean_output)}")
             if len(clean_output) > 0:
-                print(f"[DEBUG] _execute_via_shell sample: {repr(clean_output[:300])}")
+                pass
             else:
-                print(f"[DEBUG] _execute_via_shell: EMPTY OUTPUT")
-                print(f"[DEBUG] Raw output was: {repr(output[:500])}")
+                pass
             
             return 0, clean_output, ""
             
         except Exception as e:
-            print(f"[DEBUG] _execute_via_shell error: {e}")
             import traceback
             traceback.print_exc()
             if not self._transport_is_active():
@@ -921,144 +863,36 @@ class SSHClientWrapper:
                 return -1, "", "连接已断开，请重新连接服务器后再执行"
             return -1, "", str(e)
     
-    def _execute_via_exec_command(self, command: str, timeout: int = 60) -> Tuple[int, str, str]:
-        """通过exec_command执行命令（作为shell失败时的备用方案）"""
-        import traceback
-        
-        print(f"[DEBUG] _execute_via_exec_command called: command={command[:80]}")
-        
-        if not self.client:
-            print(f"[DEBUG] _execute_via_exec_command: client is None")
-            return -1, "", "SSH客户端未初始化"
-        
-        try:
-            stdin, stdout, stderr = self.client.exec_command(command, timeout=timeout)
-            if stdin:
-                stdin.close()
-            
-            output = stdout.read().decode('utf-8', errors='ignore')
-            error = stderr.read().decode('utf-8', errors='ignore')
-            exit_code = stdout.channel.recv_exit_status()
-            
-            print(f"[DEBUG] exec_command result: code={exit_code}, output_len={len(output)}, error_len={len(error)}")
-            return exit_code, output, error
-        except Exception as e:
-            print(f"[DEBUG] _execute_via_exec_command error: {e}")
-            traceback.print_exc()
-            if not self._transport_is_active():
-                self._mark_disconnected()
-            return -1, "", str(e)
     
-    def execute_stream(
-        self,
-        command: str,
-        timeout: int = 300
-    ) -> Generator[str, None, None]:
-        """
-        执行命令并实时输出结果
-        
-        Args:
-            command: 要执行的命令
-            timeout: 命令执行超时时间（秒）
-            
-        Yields:
-            str: 命令输出的每一行
-        """
-        print(f"[DEBUG] execute_stream called: command={command[:50]}, is_connected={self.is_connected}, client={self.client is not None}, use_shell={getattr(self, '_use_shell_execution', False)}")
-        
+    def execute_stream(self, command: str, timeout: int = 300) -> Generator[str, None, None]:
         if not self.client:
-            print(f"[DEBUG] execute_stream failed: not connected")
-            yield "错误：未连接到服务器"
+            yield '执行错误: 未连接到服务器'
             return
-
         ok, message = self._ensure_active_connection()
         if not ok:
-            print(f"[DEBUG] execute_stream failed: {message}")
-            yield f"错误：{message}"
+            yield f'执行错误: {message}'
             return
-        
-        # 对于OTP服务器，使用shell执行命令
         if getattr(self, '_use_shell_execution', False):
-            print(f"[DEBUG] execute_stream: OTP server detected, using shell-based execution")
-            # 使用shell执行命令（不支持流式，返回完整结果后一次性yield）
-            exit_code, output, error = self._execute_via_shell(command, timeout)
+            code, output, error = self._execute_via_shell(command, timeout)
             if output:
                 yield output
-            if error:
-                yield f"[stderr] {error}"
+            if error or code != 0:
+                yield f'执行错误: {error or "命令退出码 " + str(code)}'
             return
-        
+        chunks = self._exec_chunks(command, timeout)
         try:
-            print(f"[DEBUG] execute_stream: calling exec_command...")
-            # 不使用get_pty，避免卡死
-            stdin, stdout, stderr = self.client.exec_command(
-                command,
-                timeout=timeout
-            )
-            
-            # 关闭stdin
-            if stdin:
-                stdin.close()
-            
-            # 设置channel超时
-            stdout.channel.settimeout(2.0)
-            stderr.channel.settimeout(1.0)
-            
-            start_time = time.time()
-            last_data_time = start_time
-            heartbeat_interval = 5  # 每5秒发送一次心跳，让调用者可以检查 is_running
-            
-            # 非阻塞方式读取输出
-            while True:
-                # 检查总超时
-                if time.time() - start_time > timeout:
-                    print(f"[DEBUG] execute_stream: timeout after {timeout}s")
-                    break
-                
-                # 检查停止请求
-                if self._stop_requested:
-                    print(f"[DEBUG] execute_stream: stop requested")
-                    break
-                
-                # 检查命令是否完成
-                if stdout.channel.exit_status_ready():
-                    # 读取剩余输出
-                    try:
-                        while stdout.channel.recv_ready():
-                            chunk = stdout.channel.recv(65535).decode('utf-8', errors='ignore')
-                            if chunk:
-                                print(f"[DEBUG] execute_stream: got {len(chunk)} chars")
-                                yield chunk
-                    except:
-                        pass
-                    break
-                
-                # 读取可用数据
-                try:
-                    if stdout.channel.recv_ready():
-                        chunk = stdout.channel.recv(65535).decode('utf-8', errors='ignore')
-                        if chunk:
-                            print(f"[DEBUG] execute_stream: got {len(chunk)} chars")
-                            last_data_time = time.time()
-                            yield chunk
-                    else:
-                        # 如果超过 heartbeat_interval 秒没有收到数据，发送心跳
-                        # 这让调用者可以检查 is_running 并决定是否继续等待
-                        if time.time() - last_data_time >= heartbeat_interval:
-                            print(f"[DEBUG] execute_stream: heartbeat (no data for {heartbeat_interval}s)")
-                            last_data_time = time.time()
-                            yield ""  # 空字符串作为心跳标记
-                        time.sleep(0.1)
-                except socket.timeout:
-                    continue
-                except Exception as e:
-                    print(f"[DEBUG] execute_stream recv error: {e}")
-                    break
-                
-        except Exception as e:
-            print(f"[DEBUG] execute_stream error: {e}")
-            yield f"命令执行异常：{str(e)}"
-    
+            for kind, data in chunks:
+                if kind in ('stdout', 'heartbeat'):
+                    yield data
+                elif kind == 'stderr':
+                    yield f'[stderr] {data}'
+                elif kind == 'error':
+                    yield f'执行错误: {data}'
+                elif kind == 'exit' and data != 0:
+                    yield f'执行错误: 命令退出码 {data}'
+        finally:
+            chunks.close()
+
     def upload_file(
         self,
         local_path: str,
@@ -1136,6 +970,9 @@ class SSHClientWrapper:
     
     def disconnect(self) -> None:
         """断开 SSH 连接"""
+        self._sudo_password = None
+        self._use_shell_execution = False
+        self._otp_shell = None
         if self.sftp:
             try:
                 self.sftp.close()
@@ -1191,35 +1028,29 @@ class SSHClientWrapper:
                 if channel.recv_ready():
                     chunk = channel.recv(4096).decode('utf-8', errors='ignore')
                     output += chunk
-                    print(f"[DEBUG] run_with_pty recv: {repr(chunk[:80])}")
                     
                     # 检测到密码提示符，发送密码
                     if not password_sent and password_prompt in chunk:
                         time.sleep(0.1)
                         channel.send((password + '\n').encode('utf-8'))
                         password_sent = True
-                        print(f"[DEBUG] run_with_pty: password sent")
                         continue
                     
                     # 检测认证失败（再次出现密码提示）
                     if password_sent and not authenticated and password_prompt in chunk:
-                        print(f"[DEBUG] run_with_pty: password prompt appeared again, auth failed")
                         break
                     
                     # 检测su成功执行完毕（出现root提示符或命令输出包含root）
                     if password_sent and not authenticated:
                         if 'root' in output.lower() or '#' in output:
                             authenticated = True
-                            print(f"[DEBUG] run_with_pty: authentication appears successful")
                 
                 # 检查channel是否已关闭
                 if channel.exit_status_ready():
-                    print(f"[DEBUG] run_with_pty: channel closed")
                     break
                 
                 time.sleep(0.05)
             
-            print(f"[DEBUG] run_with_pty: loop ended, loops={loop_count}, elapsed={(time.time() - start_time):.2f}s")
             
             # 读取所有剩余输出
             channel.settimeout(1.0)
@@ -1233,22 +1064,19 @@ class SSHClientWrapper:
             except socket.timeout:
                 pass
             except Exception as e:
-                print(f"[DEBUG] run_with_pty: error reading remaining output: {e}")
+                pass
             
             # 获取退出状态
             try:
                 exit_status = channel.recv_exit_status()
             except Exception as e:
-                print(f"[DEBUG] run_with_pty: recv_exit_status error: {e}")
                 exit_status = -1
             
             channel.close()
             
-            print(f"[DEBUG] run_with_pty: final - exit_status={exit_status}, output_len={len(output)}, authenticated={authenticated}")
             return exit_status, output, ""
             
         except Exception as e:
-            print(f"[DEBUG] run_with_pty error: {e}")
             return -1, "", str(e)
     
     def __enter__(self):

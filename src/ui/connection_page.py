@@ -223,7 +223,7 @@ class RootPasswordDialog(QDialog):
     
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setWindowTitle("切换为root")
+        self.setWindowTitle("启用 root 命令")
         self.setWindowIcon(dialog_icon("connect.svg"))
         self.setMinimumWidth(400)
         self.setMinimumHeight(200)
@@ -238,14 +238,14 @@ class RootPasswordDialog(QDialog):
         title_icon.setStyleSheet("font-size: 28px;")
         title_layout.addWidget(title_icon)
         
-        title_label = QLabel("切换为root用户")
+        title_label = QLabel("启用 root 命令")
         title_label.setStyleSheet("font-size: 20px; font-weight: bold; color: #7c3aed;")
         title_layout.addWidget(title_label)
         title_layout.addStretch()
         layout.addLayout(title_layout)
         
         # 说明
-        instr_label = QLabel("请输入root密码以切换到root用户身份")
+        instr_label = QLabel("输入当前登录用户的 sudo 密码，后续命令将以 root 执行。")
         instr_label.setWordWrap(True)
         instr_label.setStyleSheet("color: #6b7280; font-size: 13px; padding-left: 36px;")
         layout.addWidget(instr_label)
@@ -258,7 +258,7 @@ class RootPasswordDialog(QDialog):
         
         self.password_input = QLineEdit()
         self.password_input.setEchoMode(QLineEdit.EchoMode.Password)
-        self.password_input.setPlaceholderText("请输入root密码")
+        self.password_input.setPlaceholderText("输入 sudo 密码")
         self.password_input.setMinimumHeight(40)
         self.password_input.setStyleSheet("""
             font-size: 15px;
@@ -288,7 +288,7 @@ class RootPasswordDialog(QDialog):
         layout.addStretch()
         
         # 按钮
-        ok_btn = PrimaryPushButton("确认切换")
+        ok_btn = PrimaryPushButton("启用")
         ok_btn.setMinimumHeight(40)
         ok_btn.setEnabled(False)  # 密码为空时禁用
         ok_btn.clicked.connect(self.accept)
@@ -874,54 +874,18 @@ class ConnectionPage(QWidget):
         self.status_text.append("已断开连接")
 
     def switch_to_root(self):
-        """切换到root用户 - 使用sudo -S验证"""
-        self.status_text.append("[调试] switch_to_root 被调用")
-        
-        dialog = RootPasswordDialog(self)
-        result = dialog.exec()
-        self.status_text.append(f"[调试] dialog.exec() 返回: {result}")
-        
-        if result != QDialog.DialogCode.Accepted:
-            self.status_text.append("[调试] 用户取消")
-            return
-        
-        root_password = dialog.get_password()
-        self.status_text.append(f"[调试] 密码长度: {len(root_password)}")
-        
         if not self.ssh_client:
-            self.status_text.append("✗ 未连接服务器")
             return
-        
-        self.status_text.append("正在验证root权限...")
-        
-        try:
-            # 使用sudo -S通过管道发送密码验证
-            # printf确保密码被正确发送
-            cmd = f'printf "%s" "{root_password}" | sudo -S whoami 2>/dev/null'
-            self.status_text.append(f"[调试] 执行: {cmd[:50]}...")
-            
-            return_code, output, error = self.ssh_client.execute(cmd)
-            
-            self.status_text.append(f"[调试] sudo返回: return_code={return_code}, output='{output.strip()}'")
-            
-            # 检查是否成功
-            if return_code == 0 and output.strip() == 'root':
-                self.status_text.append("✓ 已验证root权限")
-                self.username_input.setText("root")
-                self.switch_root_btn.setEnabled(False)
-                self.switch_root_btn.setText("已Root")
-            elif return_code == 0 and output.strip():
-                # sudo执行了但whoami没返回root
-                self.status_text.append(f"⚠️ 权限验证返回: {output.strip()}")
-                self.status_text.append("✗ 密码可能错误")
-            else:
-                self.status_text.append("✗ root权限验证失败")
-                if error:
-                    self.status_text.append(f"  错误: {error.strip()[:100]}")
-        except Exception as e:
-            self.status_text.append(f"✗ 切换root失败: {str(e)}")
-            import traceback
-            self.status_text.append(f"堆栈: {traceback.format_exc()[:200]}")
+        dialog = RootPasswordDialog(self)
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+        ok, error = self.ssh_client.enable_sudo(dialog.get_password())
+        if ok:
+            self.status_text.append('已启用 root 命令')
+            self.switch_root_btn.setEnabled(False)
+            self.switch_root_btn.setText('root 命令已启用')
+        else:
+            self.status_text.append(error)
 
     def go_to_next_step(self):
         """跳转到下一步（脚本选择页面）"""

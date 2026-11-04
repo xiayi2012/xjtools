@@ -1,6 +1,6 @@
-﻿"""
+"""
 产品选择页面模块
-重新设计为：产品选择和服务器管理合并页 - 首页
+设备资产、连接和机柜位置管理。
 """
 
 from PyQt6.QtWidgets import (
@@ -911,7 +911,7 @@ class DeviceActionsMixin:
                    and self.server.get("switch_root", True)
                    and self.server.get("product", "") != "办公智盾")
         self.root_action.setEnabled(bool(allowed))
-        self.root_action.setToolTip("已是 root 用户" if self.is_connected and self.is_root else "")
+        self.root_action.setToolTip("当前命令以 root 执行" if self.is_connected and self.is_root else "")
 
 
 class ServerListItem(DeviceActionsMixin, QFrame):
@@ -1585,7 +1585,7 @@ class ProductSection(QWidget):
 
 
 class ProductPage(QWidget):
-    """产品选择页面 - 重写为服务器管理首页"""
+    """设备管理页面"""
 
     # 信号定义
     server_immediate_connect = pyqtSignal(dict, str)
@@ -1610,9 +1610,10 @@ class ProductPage(QWidget):
         self.device_states = {}
         self.drag_token = str(uuid4())
         self.drag_active = False
+        self._pending_arrival_id = None
         self.inspection_history = {}
         self.inventory_error = ''
-        self.inline_inspection = None
+        self.inspection_dialog = None
         self.inspection_active = False
         self.product_sections = []
         self.init_ui()
@@ -1783,9 +1784,8 @@ class ProductPage(QWidget):
         self.apply_styles()
 
     def show_device_inspection(self, inspection_page, server):
-        if self.inline_inspection is None:
+        if self.inspection_dialog is None:
             self.inspection_dialog = QDialog(self)
-            self.inline_inspection = self.inspection_dialog
             self.inspection_dialog.setMinimumSize(900, 600)
             self.inspection_dialog.resize(1080, 720)
             panel_layout = QVBoxLayout(self.inspection_dialog)
@@ -1816,8 +1816,8 @@ class ProductPage(QWidget):
         self.resume_inspection_btn.setVisible(bool(self.connected_server_id))
 
     def close_device_inspection(self):
-        if self.inline_inspection:
-            self.inline_inspection.hide()
+        if self.inspection_dialog:
+            self.inspection_dialog.hide()
         self._inspection_hidden()
 
     def toggle_view(self):
@@ -1887,9 +1887,11 @@ class ProductPage(QWidget):
             return False
         previous_selection = self.selected_device_id
         self.selected_device_id = server_id
+        self._pending_arrival_id = server_id
         result = self.commit_inventory([candidate if s.get('id') == server_id else s for s in self.servers], racks)
         if not result:
             self.selected_device_id = previous_selection
+            self._pending_arrival_id = None
         return result
 
     def create_rack_for_server(self, server_id):
@@ -1917,9 +1919,6 @@ class ProductPage(QWidget):
             self.inventory_error = f'设备配置读取失败：{error}'
         self.update_server_list()
     
-    def save_servers(self):
-        """保存服务器列表"""
-        return self.commit_inventory(self.servers)
     
     def update_server_list(self, *args):
         """更新服务器列表"""

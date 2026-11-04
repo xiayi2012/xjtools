@@ -166,3 +166,17 @@ def test_pending_single_connection_blocks_batch_start(window, monkeypatch):
     window.inspection_page.select_devices(True)
     window.inspection_page.start_inspection()
     assert not window.inspection_page.running and window.inspection_page.inspection_worker is None
+
+
+def test_device_refresh_never_keeps_export_for_removed_row(window):
+    page = window.inspection_page
+    window.product_page.servers = [dict(id=x, host=x) for x in ('a', 'b')]
+    page.refresh_devices()
+    page.results['a'] = dict(device=dict(id='a', host='a'), task_id='a-run', time='2026-11-04',
+        status='completed', message='完成', script_outputs={'builtin': {'主机': 'a'}, 'custom': {}})
+    page.device_table.setCurrentCell(0, 1)
+    assert page.task_device['id'] == 'a'
+    window.product_page.servers = [dict(id='b', host='b')]
+    page.refresh_devices()
+    assert page.task_id is None and not page.export_btn.isEnabled()
+    assert page.device_table.currentRow() == -1

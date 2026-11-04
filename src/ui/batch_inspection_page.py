@@ -158,8 +158,10 @@ class BatchInspectionPage(InspectionPage):
         self.refresh_devices()
 
     def refresh_devices(self):
-        if self.running:
+        if self.running or (getattr(self, 'export_worker', None) and self.export_worker.isRunning()):
             return
+        current = self.device_table.currentRow()
+        selected_id = self.device_table.item(current, 0).data(Qt.ItemDataRole.UserRole) if current >= 0 else None
         checked = {self.device_table.item(i, 0).data(Qt.ItemDataRole.UserRole) for i in range(self.device_table.rowCount())
                    if self.device_table.item(i, 0).checkState() == Qt.CheckState.Checked}
         self.device_table.blockSignals(True)
@@ -176,6 +178,11 @@ class BatchInspectionPage(InspectionPage):
                     self.results.get(server['id'], {}).get('message', '待选择')], 1):
                 self.device_table.setItem(row, column, QTableWidgetItem(text))
         self.device_table.blockSignals(False)
+        selected_row = self._row_for(selected_id)
+        self.device_table.setCurrentCell(-1 if selected_row is None else selected_row, 1)
+        if selected_row is None:
+            self.device_table.clearSelection()
+        self._display_result(selected_id if selected_row is not None else None)
 
     def select_devices(self, checked):
         if not self.running:
@@ -289,7 +296,7 @@ class BatchInspectionPage(InspectionPage):
             self.task_id = None
             self.task_device = {}
             self.builtin_outputs, self.custom_script_outputs = {}, {}
-            self.output_text.setPlainText('该设备尚未完成巡检，请等待执行结果。')
+            self.output_text.setPlainText('等待执行结果' if device_id else '')
             self.preview_text.setPlainText(self.output_text.toPlainText())
             self.export_btn.setEnabled(False)
             self.export_ai_btn.setEnabled(False)
@@ -300,7 +307,7 @@ class BatchInspectionPage(InspectionPage):
         self.task_checks = deepcopy(self.run_checks)
         self.builtin_outputs = dict(result['script_outputs']['builtin'])
         self.custom_script_outputs = dict(result['script_outputs']['custom'])
-        text = f'设备：{self.task_device.get("name") or device_id} · {self.task_device.get("host", "")}\n{result["message"]}\n\n'
+        text = f'设备：{self.task_device.get("name") or device_id} · {self.task_device.get("host", "")}\n时间：{result["time"]}\n{result["message"]}\n\n'
         text += '\n\n'.join(f'{name}\n{output}' for outputs in result['script_outputs'].values() for name, output in outputs.items())
         self.output_text.setPlainText(text)
         self.preview_text.setPlainText(text)
