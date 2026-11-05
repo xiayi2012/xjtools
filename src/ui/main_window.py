@@ -13,14 +13,14 @@ import calendar
 from datetime import datetime
 
 from PyQt6.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QStackedWidget, QLabel, QMessageBox, QSystemTrayIcon, QMenu, QApplication
-from PyQt6.QtCore import Qt, pyqtSignal, QSize, QThread, QTimer, QPoint
+from PyQt6.QtCore import Qt, pyqtSignal, QSize, QThread, QTimer
 from PyQt6.QtGui import QIcon, QPixmap, QFont, QColor, QAction
 
 from qfluentwidgets import (
     FluentWindow, NavigationItemPosition,
     PrimaryPushButton, PushButton, ToolButton,
     NavigationInterface, qrouter, MessageBox,
-    NavigationAvatarWidget, RoundMenu, Action
+    NavigationAvatarWidget, RoundMenu, Action, MenuAnimationType
 )
 from qfluentwidgets import FluentIcon as FIF
 
@@ -692,6 +692,8 @@ class MainWindow(FluentWindow):
         self.navigationInterface.addWidget('profile_menu', self.profile_avatar, self.show_profile_menu,
                                           position=NavigationItemPosition.BOTTOM, tooltip='个人中心与设置')
         self.profile_menu = RoundMenu(parent=self)
+        self.profile_menu.view.setMinimumWidth(220)
+        self.profile_menu.setItemHeight(36)
         for icon, text, callback in [(FIF.PEOPLE, '个人中心', self.open_profile),
                                      (FIF.SETTING, '设置', self.open_settings),
                                      (FIF.POWER_BUTTON, '退出登录', self.exit_from_tray)]:
@@ -741,7 +743,7 @@ class MainWindow(FluentWindow):
     def show_profile_menu(self):
         position = self.profile_avatar.mapToGlobal(self.profile_avatar.rect().topLeft())
         self.profile_menu.adjustSize()
-        self.profile_menu.exec(position - QPoint(0, self.profile_menu.height()))
+        self.profile_menu.exec(position, aniType=MenuAnimationType.PULL_UP)
 
     def open_settings(self, section='models'):
         self.settings_window.show_section(section if isinstance(section, str) else 'models')

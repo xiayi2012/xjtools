@@ -1,5 +1,6 @@
 import json
 from types import SimpleNamespace
+import pytest
 
 from PyQt6.QtWidgets import QDialog, QMessageBox, QApplication
 
@@ -89,3 +90,22 @@ def test_log_navigation_still_requires_connection_after_settings_move(window, qt
     window.stackedWidget.setCurrentWidget(window.log_extract_page)
     qtbot.waitUntil(lambda: window.stackedWidget.currentWidget() is window.product_page)
     assert warnings and not window.is_connected
+
+
+@pytest.mark.parametrize('compact', [False, True])
+def test_avatar_menu_stays_close_above_avatar(window, qtbot, compact):
+    window.show()
+    qtbot.wait(100)
+    if compact:
+        window.navigationInterface.toggle()
+        qtbot.wait(300)
+    window.show_profile_menu()
+    qtbot.wait(300)
+    avatar = window.profile_avatar
+    menu = window.profile_menu
+    anchor = avatar.mapToGlobal(avatar.rect().topLeft())
+    surface_top = menu.view.mapToGlobal(menu.view.rect().topLeft())
+    surface_bottom = surface_top.y() + menu.view.height()
+    assert 4 <= anchor.y() - surface_bottom <= 10
+    assert abs(surface_top.x() - anchor.x()) <= 2
+    menu.hide()
