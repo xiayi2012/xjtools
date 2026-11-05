@@ -81,6 +81,7 @@ def test_batch_freezes_only_checked_devices(window, monkeypatch):
             captured.extend(servers)
             self.device_started = SimpleNamespace(connect=lambda f: None)
             self.device_finished = SimpleNamespace(connect=lambda f: None)
+            self.device_progress = SimpleNamespace(connect=lambda f: None)
             self.progress = SimpleNamespace(connect=lambda f: None)
             self.batch_finished = SimpleNamespace(connect=lambda f: None)
         def start(self):
