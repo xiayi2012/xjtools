@@ -115,6 +115,7 @@ class BatchInspectionPage(InspectionPage):
         self.servers_provider = servers_provider
         self.results = {}
         self.running = False
+        self.ready_to_start = False
         self.run_checks = []
         self.selected_ids = []
         self.run_devices = []
@@ -232,6 +233,9 @@ class BatchInspectionPage(InspectionPage):
         footer.addWidget(self.export_all_btn)
         self.stop_btn.setMinimumHeight(38)
         footer.addWidget(self.stop_btn)
+        self.start_btn.setText('开始巡检')
+        self.start_btn.setMinimumHeight(38)
+        footer.addWidget(self.start_btn)
         self.next_btn = QPushButton('下一步')
         self.next_btn.setObjectName('nextStepButton')
         self.next_btn.clicked.connect(self._next_step)
@@ -277,14 +281,16 @@ class BatchInspectionPage(InspectionPage):
         step, busy = self.steps.currentIndex(), self._export_busy()
         self.back_btn.setVisible(step > 0)
         self.back_btn.setEnabled(not self.running and not busy)
-        self.back_btn.setText('重新选择设备' if step == 2 else '上一步')
+        self.back_btn.setText('重新选择设备' if step == 2 and not self.ready_to_start else '上一步')
         self.next_btn.setVisible(step < 2)
-        self.next_btn.setText('下一步，开始巡检' if step == 1 else '下一步')
+        self.next_btn.setText('下一步')
         checks = len(self._get_checked_inspection_items())
         self.next_btn.setEnabled(not self.running and not busy and
                                  bool(self._selected_device_ids() if step == 0 else checks))
         self.checks_summary.setText(f'已选择 {len(self.selected_ids)} 台设备 · 已勾选 {checks} 个巡检项')
         self.stop_btn.setVisible(step == 2 and self.running)
+        self.start_btn.setVisible(step == 2 and self.ready_to_start)
+        self.start_btn.setEnabled(self.ready_to_start and not self.running and not busy)
         self.export_all_btn.setVisible(step == 2)
         self.export_all_btn.setEnabled(not self.running and not busy and bool(self._report_results()))
         for row in range(self.run_table.rowCount()):
@@ -304,10 +310,26 @@ class BatchInspectionPage(InspectionPage):
             if self.selected_ids:
                 self._set_step(1)
         elif self.steps.currentIndex() == 1:
-            self.start_inspection()
+            inputs = self._inspection_inputs()
+            if inputs is None:
+                return
+            servers, checks = inputs
+            self.results = {}
+            self.run_checks = deepcopy(checks)
+            self.run_devices = deepcopy(servers)
+            self.task_id, self.task_device = None, {}
+            self._clear_inspection_state()
+            self._populate_run_table(servers)
+            self.ready_to_start = True
+            self.batch_status.setText(f'已选择 {len(servers)} 台设备、{len(checks)} 个巡检项，点击“开始巡检”执行')
+            self._set_step(2)
 
     def _previous_step(self):
         if not self.running and not self._export_busy():
+            if self.steps.currentIndex() == 2 and self.ready_to_start:
+                self.ready_to_start = False
+                self._set_step(1)
+                return
             self._set_step(0)
             self.refresh_devices()
 
@@ -408,27 +430,37 @@ class BatchInspectionPage(InspectionPage):
                 self.device_table.blockSignals(False)
             self._selection_changed()
 
-    def start_inspection(self):
-        if self.running or self._export_busy() or (getattr(self, 'start_guard', None) and not self.start_guard()):
-            QMessageBox.warning(self, '任务进行中', '请先等待当前任务完成或停止后再启动批量巡检')
-            return
-        ids = set(self.selected_ids if self.steps.currentIndex() == 1 else self._selected_device_ids())
+    def _inspection_inputs(self):
+        ids = set(self.selected_ids if self.steps.currentIndex() in (1, 2) else self._selected_device_ids())
         servers = deepcopy([s for s in self.servers_provider() if s.get('id') in ids])
         if len(servers) != len(ids):
+            self.ready_to_start = False
             self._set_step(0)
             self.refresh_devices()
             QMessageBox.warning(self, '设备列表已变化', '部分已选设备已移除，请重新选择设备')
             return
-        checks = self._get_checked_inspection_items()
+        checks = deepcopy(self.run_checks) if self.ready_to_start else self._get_checked_inspection_items()
         if not servers or not checks:
             QMessageBox.warning(self, '请选择巡检目标', '请至少勾选一台设备和一个巡检项')
             return
+        return servers, checks
+
+    def start_inspection(self):
+        if self.running or self._export_busy() or (getattr(self, 'start_guard', None) and not self.start_guard()):
+            QMessageBox.warning(self, '任务进行中', '请先等待当前任务完成或停止后再启动批量巡检')
+            return
+        inputs = self._inspection_inputs()
+        if inputs is None:
+            return
+        servers, checks = inputs
+        ids = {server['id'] for server in servers}
         self.results = {}
         self.run_checks = deepcopy(checks)
         self.task_id = None
         self.task_device = {}
         self._clear_inspection_state()
         self.running = True
+        self.ready_to_start = False
         self.run_devices = deepcopy(servers)
         self.device_percentages = {server['id']: 0 for server in servers}
         self._populate_run_table(servers)
@@ -589,6 +621,14 @@ class BatchInspectionPage(InspectionPage):
             self.batch_status.setText('报告已保存：' + path)
         except OSError as exc:
             QMessageBox.warning(self, '报告保存失败', str(exc))
+            return
+        self._open_report_folder(path)
+
+    def _open_report_folder(self, report_path):
+        try:
+            self._open_folder(str(report_path))
+        except OSError as exc:
+            QMessageBox.warning(self, '无法打开文件夹', f'报告已保存，但无法打开所在文件夹。\n{exc}')
 
     def export_all_reports(self):
         results = self._report_results()
@@ -610,3 +650,5 @@ class BatchInspectionPage(InspectionPage):
             self.batch_status.setText(f'已导出 {len(results)} 份设备报告：{directory}')
         except OSError as exc:
             QMessageBox.warning(self, '报告保存失败', f'部分报告可能已经保存，请核对目录。\n{exc}')
+            return
+        self._open_report_folder(path)

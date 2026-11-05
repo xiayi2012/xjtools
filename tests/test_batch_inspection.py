@@ -99,6 +99,7 @@ def test_batch_freezes_only_checked_devices(window, monkeypatch):
 
 def test_failed_report_preserves_reason_and_waiting_row_clears_result(window, monkeypatch, tmp_path):
     page = window.inspection_page
+    monkeypatch.setattr(page, '_open_folder', lambda path: None)
     window.product_page.servers = [dict(id=x, host=x) for x in ('a', 'b')]
     page.refresh_devices()
     page.results['a'] = dict(device=dict(id='a', host='a'), task_id='run-a', time='2026-11-04',
@@ -130,6 +131,7 @@ def test_batch_results_and_history_remain_bound_to_device(window, qtbot, monkeyp
                          client_factory=Client, password_reader=lambda s: 'test'))
     window.product_page.servers = [dict(id=x, host=x) for x in ('a', 'b')]
     page = window.inspection_page
+    monkeypatch.setattr(page, '_open_folder', lambda path: None)
     page.refresh_devices()
     page.select_devices(True)
     page.start_inspection()

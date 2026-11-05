@@ -38,6 +38,14 @@ def test_wizard_requires_targets_then_checks_and_keeps_output_hidden(window, qtb
     page._select_all()
     monkeypatch.setattr(BatchInspectionWorker, 'start', lambda self: None)
     page.next_btn.click()
+    assert not page.running and page.inspection_worker is None
+    assert page.steps.currentIndex() == 2
+    assert page.start_btn.isVisibleTo(page) and page.start_btn.isEnabled()
+    page.back_btn.click()
+    assert page.steps.currentIndex() == 1
+    page.next_btn.click()
+    assert not page.running and page.inspection_worker is None
+    page.start_btn.click()
     assert page.running and page.steps.currentIndex() == 2
     assert not page.inspect_list.isVisibleTo(page)
     assert not page.output_tabs.isVisibleTo(page)
@@ -64,6 +72,20 @@ def test_removed_target_before_execution_returns_to_selection(window, monkeypatc
     page.next_btn.click()
     assert page.steps.currentIndex() == 0
     assert not page.running and page.inspection_worker is None
+
+
+def test_target_removed_from_ready_page_cannot_start(window):
+    page = window.inspection_page
+    window.product_page.servers = [dict(id='a', host='a')]
+    page.refresh_devices()
+    page.select_devices(True)
+    page.next_btn.click()
+    page.next_btn.click()
+    assert page.ready_to_start and not page.running
+    window.product_page.servers = []
+    page.start_btn.click()
+    assert page.steps.currentIndex() == 0
+    assert not page.ready_to_start and not page.running and page.inspection_worker is None
 
 
 def test_worker_reports_real_per_device_check_progress_and_continues(qtbot):
@@ -130,11 +152,32 @@ def test_row_export_uses_clicked_device_and_batch_skips_unstarted(window, monkey
     target = tmp_path / 'clicked-b.txt'
     monkeypatch.setattr('ui.batch_inspection_page.QFileDialog.getSaveFileName', lambda *a: (str(target), ''))
     saved = QSignalSpy(page.report_saved)
+    opened = []
+    monkeypatch.setattr(page, '_open_folder', opened.append)
     page.run_table.cellWidget(1, 5).findChild(QPushButton, 'deviceReportExport').click()
     content = target.read_text(encoding='utf-8')
     assert 'b-task' in content and 'host-b' in content and 'host-a' not in content
     assert saved[-1][0]['device_id'] == 'b'
+    assert opened == [str(target)]
     monkeypatch.setattr('ui.batch_inspection_page.QFileDialog.getExistingDirectory', lambda *a: str(tmp_path))
     page.export_all_reports()
     assert len(list(tmp_path.glob('巡检报告_*.txt'))) == 2
+    assert len(opened) == 2 and Path(opened[-1]).parent == tmp_path
     assert not page.run_table.cellWidget(2, 5).findChild(QPushButton, 'deviceReportExport').isEnabled()
+
+
+def test_cancelled_or_failed_export_does_not_open_folder(window, monkeypatch, tmp_path):
+    page = window.inspection_page
+    page.results['a'] = dict(device=dict(id='a', host='a'), task_id='a-task', time='today',
+        status='completed', message='完成', script_outputs={'builtin': {'主机': 'a'}, 'custom': {}})
+    page._display_result('a')
+    opened = []
+    monkeypatch.setattr(page, '_open_folder', opened.append)
+    monkeypatch.setattr(page, '_choose_raw_export_format', lambda: 'txt')
+    monkeypatch.setattr('ui.batch_inspection_page.QFileDialog.getSaveFileName', lambda *a: ('', ''))
+    page.on_export_clicked()
+    monkeypatch.setattr('ui.batch_inspection_page.QFileDialog.getSaveFileName',
+                        lambda *a: (str(tmp_path / 'missing' / 'report.txt'), ''))
+    page.on_export_clicked()
+    assert not opened
+    assert page.results['a']['task_id'] == 'a-task'
