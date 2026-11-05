@@ -13,18 +13,20 @@ import calendar
 from datetime import datetime
 
 from PyQt6.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QStackedWidget, QLabel, QMessageBox, QSystemTrayIcon, QMenu, QApplication
-from PyQt6.QtCore import Qt, pyqtSignal, QSize, QThread, QTimer
+from PyQt6.QtCore import Qt, pyqtSignal, QSize, QThread, QTimer, QPoint
 from PyQt6.QtGui import QIcon, QPixmap, QFont, QColor, QAction
 
 from qfluentwidgets import (
     FluentWindow, NavigationItemPosition,
     PrimaryPushButton, PushButton, ToolButton,
-    NavigationInterface, qrouter, MessageBox
+    NavigationInterface, qrouter, MessageBox,
+    NavigationAvatarWidget, RoundMenu, Action
 )
 from qfluentwidgets import FluentIcon as FIF
 
 from .product_page import ProductPage, decrypt_password
 from .button_styles import install_button_styles
+from .settings_window import SettingsWindow, ProfileDialog, load_display_name
 from .home_page import HomePage
 from .inspection_page import InspectionPage, ExportReportWorker
 from .batch_inspection_page import BatchInspectionPage
@@ -397,15 +399,15 @@ class MainWindow(FluentWindow):
         self.log_extract_page.setObjectName("log_extract_page")
         self.ai_troubleshoot_page.setObjectName("ai_troubleshoot_page")
         self.ai_config_page.setObjectName("ai_config_page")
+        self.settings_window = SettingsWindow(self.ai_config_page, self.system_guard_page, self)
+        self.profile_dialog = None
         
         # 添加子界面到导航
         self.addSubInterface(self.home_page, FIF.HOME, "首页")
         self.addSubInterface(self.product_page, FIF.IOT, "设备管理")
         self.addSubInterface(self.inspection_page, FIF.PLAY, "批量巡检")
         self.addSubInterface(self.ai_troubleshoot_page, FIF.CHAT, "AI 排障")
-        self.addSubInterface(self.system_guard_page, FIF.CALENDAR, "定时巡检")
         self.addSubInterface(self.log_extract_page, FIF.DOCUMENT, "日志收集")
-        self.addSubInterface(self.ai_config_page, FIF.SETTING, "大模型配置")
         
         # 设置导航选中状态
         self.navigationInterface.setCurrentItem(self.home_page.objectName())
@@ -481,11 +483,13 @@ class MainWindow(FluentWindow):
 
     def _has_shutdown_work(self):
         return (self._has_active_device_task() or bool(self.operation_router.pending)
-                or any(worker and worker.isRunning() for worker in (self.connection_worker, self.scheduled_worker)))
+                or any(worker and worker.isRunning() for worker in (
+                    self.connection_worker, self.scheduled_worker,
+                    getattr(self.ai_config_page, '_test_worker', None))))
 
     def exit_from_tray(self):
         if self._has_shutdown_work():
-            QMessageBox.warning(self, '任务仍在运行', '请先停止正在运行的巡检或运维任务，再退出程序。')
+            QMessageBox.warning(self, '任务仍在运行', '请等待连接测试结束，或停止正在运行的巡检与运维任务后，再退出程序。')
             return
         self._force_quit = True
         if self.tray_icon:
@@ -680,6 +684,20 @@ class MainWindow(FluentWindow):
         # 设置导航栏宽度（窄一点）
         self.navigationInterface.setExpandWidth(180)
         self.navigationInterface.expand(useAni=False)
+        self.profile_path = self.product_page.inventory_store().path.parent / 'profile.json'
+        self.profile_avatar = NavigationAvatarWidget(load_display_name(self.profile_path), parent=self)
+        self.profile_avatar.avatar.setBackgroundColor(QColor('#e2f1ec'), QColor('#25473f'))
+        self.profile_avatar.setObjectName('profileAvatar')
+        self.profile_avatar.setAccessibleName('个人菜单')
+        self.navigationInterface.addWidget('profile_menu', self.profile_avatar, self.show_profile_menu,
+                                          position=NavigationItemPosition.BOTTOM, tooltip='个人中心与设置')
+        self.profile_menu = RoundMenu(parent=self)
+        for icon, text, callback in [(FIF.PEOPLE, '个人中心', self.open_profile),
+                                     (FIF.SETTING, '设置', self.open_settings),
+                                     (FIF.POWER_BUTTON, '退出登录', self.exit_from_tray)]:
+            action = Action(icon, text, self)
+            action.triggered.connect(callback)
+            self.profile_menu.addAction(action)
         
         # 设置标题栏字体大小
         self.titleBar.titleLabel.setStyleSheet("font-size: 18px; font-weight: bold;")
@@ -719,6 +737,24 @@ class MainWindow(FluentWindow):
         self.connection_btn.installEventFilter(self)
         title_index = self.titleBar.hBoxLayout.indexOf(self.titleBar.titleLabel)
         self.titleBar.hBoxLayout.insertWidget(title_index + 1 if title_index >= 0 else 2, self.connection_btn)
+
+    def show_profile_menu(self):
+        position = self.profile_avatar.mapToGlobal(self.profile_avatar.rect().topLeft())
+        self.profile_menu.adjustSize()
+        self.profile_menu.exec(position - QPoint(0, self.profile_menu.height()))
+
+    def open_settings(self, section='models'):
+        self.settings_window.show_section(section if isinstance(section, str) else 'models')
+
+    def open_profile(self):
+        if self.profile_dialog is None:
+            self.profile_dialog = ProfileDialog(self.profile_path, self.profile_avatar.name, self)
+            self.profile_dialog.profile_saved.connect(self.profile_avatar.setName)
+        if not self.profile_dialog.isVisible():
+            self.profile_dialog.name_input.setText(self.profile_avatar.name)
+        self.profile_dialog.showNormal()
+        self.profile_dialog.raise_()
+        self.profile_dialog.activateWindow()
     
     def eventFilter(self, obj, e):
         """事件过滤器 - 处理连接按钮悬停"""
@@ -733,11 +769,10 @@ class MainWindow(FluentWindow):
     
     def _on_page_changed(self, index: int):
         """页面切换拦截 - 未连接时阻止访问受限页面"""
-        # 页面索引: 0=首页, 1=设备管理, 2=一键巡检, 3=AI排障, 4=定时巡检, 5=日志收集, 6=大模型配置
-        # 首页、设备管理、定时巡检、大模型配置不需要连接，AI排障/AI巡检/日志收集需要连接
-        if index == 2:
+        page = self.stackedWidget.widget(index)
+        if page is self.inspection_page:
             self.inspection_page.refresh_devices()
-        if not self.is_connected and index in (3, 5):
+        if not self.is_connected and page in (self.ai_troubleshoot_page, self.log_extract_page):
             from qfluentwidgets import MessageBox
             MessageBox("提示", "请先连接服务器", self).exec()
             # 切换回设备管理页
@@ -746,6 +781,9 @@ class MainWindow(FluentWindow):
     
     def switch_page(self, index: int, force: bool = False):
         """切换页面"""
+        if index in (4, 6):
+            self.open_settings('schedules' if index == 4 else 'models')
+            return
         page_names = [
             self.home_page,
             self.product_page,
