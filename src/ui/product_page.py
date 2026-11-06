@@ -10,7 +10,7 @@ from PyQt6.QtWidgets import (
     QComboBox, QMessageBox, QSizePolicy, QFileDialog, QTimeEdit, QTextEdit
 )
 from PyQt6.QtCore import Qt, pyqtSignal, QTime, QSize
-from qfluentwidgets import PrimaryPushButton, ToolButton, FluentIcon as FIF
+from qfluentwidgets import PrimaryPushButton, ToolButton, CheckBox, FluentIcon as FIF
 
 import json
 import os
@@ -26,6 +26,7 @@ from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
 
 from utils import get_config_dir as _get_config_dir
 from .dialog_icons import dialog_icon
+from .form_dialog import style_inventory_dialog, form_title, form_section
 from core.rack_inventory import InventoryStore, placement_error, recommend_slot
 from .rack_view import RackView, RackDialog
 
@@ -106,10 +107,10 @@ class AddServerDialog(QDialog):
         self.racks = racks if racks is not None else getattr(parent, 'racks', [])
         self.servers = servers if servers is not None else getattr(parent, 'servers', [])
         
-        self.setWindowTitle("编辑服务器" if self.is_edit else "添加服务器")
+        self.setWindowTitle("编辑设备" if self.is_edit else "添加设备")
         self.setWindowIcon(dialog_icon("product.svg"))
-        self.setMinimumWidth(450)
-        self.setMinimumHeight(380)
+        self.setMinimumWidth(560)
+        style_inventory_dialog(self)
         self.setModal(True)
         
         self.init_ui()
@@ -124,98 +125,54 @@ class AddServerDialog(QDialog):
         self.update_position_preview()
     
     def init_ui(self):
-        """初始化UI"""
         layout = QVBoxLayout(self)
-        layout.setSpacing(12)
-        
-        # 产品选择
-        product_layout = QHBoxLayout()
-        product_label = QLabel("产品:")
-        product_label.setMinimumWidth(70)
-        product_layout.addWidget(product_label)
-        
+        layout.setContentsMargins(24, 20, 24, 20)
+        layout.setSpacing(14)
+        layout.addWidget(form_title(self.windowTitle()))
+
+        info, info_form = form_section('设备信息')
         self.product_combo = QComboBox()
-        self.product_combo.setMinimumHeight(32)
         self.product_combo.setEditable(True)
-        self.product_combo.addItems(["准入系统", "EDR", "零信任"])
-        product_layout.addWidget(self.product_combo, 1)
-        layout.addLayout(product_layout)
-        
-        # 服务器名称
-        name_layout = QHBoxLayout()
-        name_label = QLabel("名称:")
-        name_label.setMinimumWidth(70)
-        name_layout.addWidget(name_label)
-        
+        self.product_combo.addItems(['准入系统', 'EDR', '零信任'])
         self.name_input = QLineEdit()
-        self.name_input.setPlaceholderText("服务器备注名(可选)")
-        self.name_input.setMinimumHeight(32)
-        name_layout.addWidget(self.name_input, 1)
-        layout.addLayout(name_layout)
-        
-        # 主机地址
-        host_layout = QHBoxLayout()
-        host_label = QLabel("主机地址:")
-        host_label.setMinimumWidth(70)
-        host_layout.addWidget(host_label)
-        
+        self.name_input.setPlaceholderText('设备名称（可选）')
+        info_form.addRow('产品', self.product_combo)
+        info_form.addRow('设备名称', self.name_input)
+        layout.addWidget(info)
+
+        connection, connection_form = form_section('SSH 连接')
         self.host_input = QLineEdit()
-        self.host_input.setPlaceholderText("例如: 192.168.1.100")
-        self.host_input.setMinimumHeight(32)
-        host_layout.addWidget(self.host_input, 1)
-        layout.addLayout(host_layout)
-        
-        # 端口
-        port_layout = QHBoxLayout()
-        port_label = QLabel("端口:")
-        port_label.setMinimumWidth(70)
-        port_layout.addWidget(port_label)
-        
+        self.host_input.setPlaceholderText('例如 192.168.1.100')
         self.port_input = QSpinBox()
         self.port_input.setRange(1, 65535)
         self.port_input.setValue(22)
-        self.port_input.setMinimumHeight(32)
-        port_layout.addWidget(self.port_input)
-        port_layout.addStretch(1)
-        layout.addLayout(port_layout)
-        
-        # 用户名
-        user_layout = QHBoxLayout()
-        user_label = QLabel("用户名:")
-        user_label.setMinimumWidth(70)
-        user_layout.addWidget(user_label)
-        
+        self.port_input.setFixedWidth(102)
+        address = QHBoxLayout()
+        address.setSpacing(8)
+        address.addWidget(self.host_input, 1)
+        address.addWidget(QLabel('端口'))
+        address.addWidget(self.port_input)
+        connection_form.addRow('主机地址', address)
         self.username_input = QLineEdit()
-        self.username_input.setPlaceholderText("例如: root")
-        self.username_input.setMinimumHeight(32)
-        user_layout.addWidget(self.username_input, 1)
-        layout.addLayout(user_layout)
-        
-        # 密码
-        pwd_layout = QHBoxLayout()
-        pwd_label = QLabel("密码:")
-        pwd_label.setMinimumWidth(70)
-        pwd_layout.addWidget(pwd_label)
-        
+        self.username_input.setPlaceholderText('例如 root 或 ops')
+        connection_form.addRow('用户名', self.username_input)
         self.password_input = QLineEdit()
         self.password_input.setEchoMode(QLineEdit.EchoMode.Password)
-        self.password_input.setPlaceholderText("输入密码")
-        self.password_input.setMinimumHeight(32)
-        pwd_layout.addWidget(self.password_input, 1)
-        layout.addLayout(pwd_layout)
-        
-        # 支持切换root
-        self.switch_root_checkbox = QCheckBox("需要切换root")
+        self.password_input.setPlaceholderText('输入 SSH 登录密码')
+        connection_form.addRow('密码', self.password_input)
+        self.switch_root_checkbox = CheckBox('连接后启用 root 命令')
         self.switch_root_checkbox.setChecked(False)
-        layout.addWidget(self.switch_root_checkbox)
+        connection_form.addRow('', self.switch_root_checkbox)
+        layout.addWidget(connection)
 
+        placement, placement_form = form_section('机柜位置')
         self.rack_combo = QComboBox()
         self.rack_combo.addItem('暂不上架', None)
         for rack in self.racks:
             self.rack_combo.addItem(f'{rack.get("code", "")} · {rack.get("name", "")} ({rack.get("units")}U)', rack['id'])
-        layout.addWidget(QLabel('机柜位置'))
-        layout.addWidget(self.rack_combo)
+        placement_form.addRow('目标机柜', self.rack_combo)
         position_row = QHBoxLayout()
+        position_row.setSpacing(8)
         self.rack_start = QSpinBox()
         self.rack_start.setRange(1, 60)
         self.rack_start.setPrefix('起始 U ')
@@ -224,38 +181,34 @@ class AddServerDialog(QDialog):
         self.rack_height.setPrefix('高度 ')
         self.rack_height.setSuffix(' U')
         self.recommend_btn = QPushButton('推荐空位')
+        self.recommend_btn.setMinimumHeight(36)
         self.recommend_btn.clicked.connect(self.recommend_position)
         for field in (self.rack_start, self.rack_height, self.recommend_btn):
             position_row.addWidget(field)
-        layout.addLayout(position_row)
+        placement_form.addRow('占用位置', position_row)
         self.position_preview = QLabel()
         self.position_preview.setTextFormat(Qt.TextFormat.PlainText)
         self.position_preview.setWordWrap(True)
-        layout.addWidget(self.position_preview)
+        placement_form.addRow('', self.position_preview)
+        layout.addWidget(placement)
         self.rack_combo.currentIndexChanged.connect(self.update_position_preview)
         self.rack_start.valueChanged.connect(self.update_position_preview)
         self.rack_height.valueChanged.connect(self.update_position_preview)
-        
 
-        
-        # 按钮
-        btn_layout = QHBoxLayout()
-        btn_layout.addStretch()
-        
-        self.ok_btn = PrimaryPushButton("确定")
-        self.ok_btn.setMinimumHeight(35)
-        self.ok_btn.setFixedWidth(100)
-        self.ok_btn.clicked.connect(self.validate_and_accept)
-        btn_layout.addWidget(self.ok_btn)
-        
-        cancel_btn = QPushButton("取消")
-        cancel_btn.setMinimumHeight(35)
-        cancel_btn.setFixedWidth(100)
+        footer = QHBoxLayout()
+        footer.addStretch()
+        cancel_btn = QPushButton('取消')
+        cancel_btn.setAutoDefault(False)
         cancel_btn.clicked.connect(self.reject)
-        btn_layout.addWidget(cancel_btn)
-        
-        layout.addLayout(btn_layout)
-    
+        footer.addWidget(cancel_btn)
+        self.ok_btn = PrimaryPushButton('保存设备')
+        self.ok_btn.setDefault(True)
+        self.ok_btn.clicked.connect(self.validate_and_accept)
+        footer.addWidget(self.ok_btn)
+        for button in (cancel_btn, self.ok_btn):
+            button.setMinimumSize(100, 38)
+        layout.addLayout(footer)
+
     def load_server_data(self):
         """加载服务器数据到表单"""
         if not self.server_data:

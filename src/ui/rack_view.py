@@ -7,14 +7,16 @@ from PyQt6.QtCore import Qt, pyqtSignal, QTimer, QRectF, QMimeData, QPoint
 from PyQt6.QtGui import QPainter, QColor, QPen, QDrag, QCursor
 from PyQt6.QtWidgets import (
     QWidget, QFrame, QLabel, QPushButton, QVBoxLayout, QHBoxLayout, QGridLayout,
-    QScrollArea, QDialog, QFormLayout, QLineEdit, QSpinBox, QDialogButtonBox, QApplication, QToolTip,
+    QScrollArea, QDialog, QLineEdit, QSpinBox, QApplication, QToolTip,
     QToolButton, QMenu, QProgressBar,
 )
-from qfluentwidgets import FluentIcon as FIF
+from qfluentwidgets import PrimaryPushButton, FluentIcon as FIF
 
 from core.rack_inventory import partition_devices
 from .hardware_art import draw_cabinet, draw_server, EmptyRackIllustration
 from .hardware_motion import MotionValue
+from .form_dialog import style_inventory_dialog, form_title, form_section
+from .dialog_icons import dialog_icon
 
 UNIT_PITCH = 30
 DEVICE_MIME = 'application/x-xjtools-device'
@@ -128,8 +130,15 @@ class RackDialog(QDialog):
         super().__init__(parent)
         self.rack = dict(rack or {})
         self.setWindowTitle('编辑机柜' if rack else '新增机柜')
-        self.setMinimumWidth(380)
-        form = QFormLayout(self)
+        self.setWindowIcon(dialog_icon('rack.svg'))
+        self.setMinimumWidth(480)
+        style_inventory_dialog(self)
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(24, 20, 24, 20)
+        layout.setSpacing(14)
+        layout.addWidget(form_title(self.windowTitle()))
+        section, form = form_section('机柜信息')
+        layout.addWidget(section)
         self.code = QLineEdit(self.rack.get('code', ''))
         self.code.setPlaceholderText('例如 A01，同一系统内唯一')
         self.name = QLineEdit(self.rack.get('name', ''))
@@ -144,12 +153,21 @@ class RackDialog(QDialog):
             field.setMinimumHeight(32)
             form.addRow(title, field)
         self.error = plain_label('')
-        self.error.setStyleSheet('color:#b45309')
+        self.error.setStyleSheet('color:#a83e46;')
         form.addRow(self.error)
-        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Save | QDialogButtonBox.StandardButton.Cancel)
-        buttons.accepted.connect(self.validate)
-        buttons.rejected.connect(self.reject)
-        form.addRow(buttons)
+        footer = QHBoxLayout()
+        footer.addStretch()
+        cancel = QPushButton('取消')
+        cancel.setAutoDefault(False)
+        cancel.clicked.connect(self.reject)
+        footer.addWidget(cancel)
+        save = PrimaryPushButton('保存机柜')
+        save.setDefault(True)
+        save.clicked.connect(self.validate)
+        footer.addWidget(save)
+        for button in (cancel, save):
+            button.setMinimumSize(100, 38)
+        layout.addLayout(footer)
 
     def validate(self):
         if not self.code.text().strip() or not self.name.text().strip():
