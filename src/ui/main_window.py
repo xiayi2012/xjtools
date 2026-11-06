@@ -27,6 +27,7 @@ from qfluentwidgets import FluentIcon as FIF
 from .product_page import ProductPage, decrypt_password
 from .button_styles import install_button_styles
 from .settings_window import SettingsWindow, ProfileDialog, load_display_name
+from .dialog_icons import dialog_icon
 from .home_page import HomePage
 from .inspection_page import InspectionPage, ExportReportWorker
 from .batch_inspection_page import BatchInspectionPage
@@ -685,7 +686,8 @@ class MainWindow(FluentWindow):
         self.navigationInterface.setExpandWidth(180)
         self.navigationInterface.expand(useAni=False)
         self.profile_path = self.product_page.inventory_store().path.parent / 'profile.json'
-        self.profile_avatar = NavigationAvatarWidget(load_display_name(self.profile_path), parent=self)
+        self.profile_avatar = NavigationAvatarWidget(load_display_name(self.profile_path),
+                                                     avatar=dialog_icon('avatar.svg').pixmap(64, 64), parent=self)
         self.profile_avatar.avatar.setBackgroundColor(QColor('#e2f1ec'), QColor('#25473f'))
         self.profile_avatar.setObjectName('profileAvatar')
         self.profile_avatar.setAccessibleName('个人菜单')

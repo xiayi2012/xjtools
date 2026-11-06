@@ -90,10 +90,13 @@ class ProfileDialog(QDialog):
         layout = QVBoxLayout(self)
         layout.setContentsMargins(28, 24, 28, 24)
         layout.setSpacing(16)
-        self.avatar = QLabel(name[:1])
+        self.avatar = QLabel()
         self.avatar.setFixedSize(64, 64)
         self.avatar.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.avatar.setStyleSheet('background:#e2f1ec; color:#147868; border-radius:32px; font-size:26px; font-weight:600;')
+        avatar_image = dialog_icon('avatar.svg').pixmap(128, 128)
+        avatar_image.setDevicePixelRatio(2)
+        self.avatar.setPixmap(avatar_image)
+        self.avatar.setAccessibleName('默认头像')
         layout.addWidget(self.avatar, alignment=Qt.AlignmentFlag.AlignHCenter)
         title = QLabel('个人中心')
         title.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -132,6 +135,5 @@ class ProfileDialog(QDialog):
         except OSError as exc:
             QMessageBox.warning(self, '保存失败', str(exc))
             return
-        self.avatar.setText(name[:1])
         self.profile_saved.emit(name)
         self.accept()
